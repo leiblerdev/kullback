@@ -239,11 +239,11 @@ def test_an_open_ruling_or_a_set_aside_withholds_trust_for_open_ruling(update, r
     assert row["gates"]["no_open_ruling"] is (tier == "trusted")
 
 
-def test_a_run_that_names_no_model_is_neither_a_replay_nor_fresh():
+def test_only_a_named_model_other_than_the_recorded_one_is_fresh():
     unnamed = _fresh().model_copy(update={"model": None})
-    assert T.is_replay(_replay()) and not T.is_fresh(_replay())
-    assert T.is_fresh(_fresh()) and not T.is_replay(_fresh())
-    assert not T.is_replay(unnamed) and not T.is_fresh(unnamed)
+    assert not T.is_fresh(_replay())
+    assert T.is_fresh(_fresh())
+    assert not T.is_fresh(unnamed)
 
 
 def _write_verifier(root, verifier, task_id="t1"):

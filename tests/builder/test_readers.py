@@ -396,7 +396,7 @@ def test_a_prose_sighting_this_stage_reveals_cannot_split_a_task(tmp_path):
 
     traces, schema, artifact = probe_proposal(tmp_path)
     assert readers.reader_rows(artifact), "the stage still reveals rows for the Starting state"
-    revealed = set(readers.revealed_tables(schema))
+    revealed = {c.table for c in schema.columns if (c.evidence or {}).get("revealed_by")}
     worlds = trace_worlds(traces, schema, {"open_vent"})
     assert revealed and not any(key[1] in revealed for world in worlds.values() for key in world)
 
@@ -411,7 +411,6 @@ def test_the_columns_carry_the_requestor_that_revealed_them_and_the_export_flags
     revealed = [c for c in schema.columns if c.table == "greenhouse"]
     assert {c.name for c in revealed} == {"vent", "warmth"}
     assert all(c.evidence["revealed_by"] == CARETAKER for c in revealed)
-    assert readers.revealed_tables(schema) == {"greenhouse": CARETAKER}
 
 
 # --- the attempts ------------------------------------------------------------
@@ -430,6 +429,10 @@ def test_a_failing_proposal_is_handed_back_the_shapes_that_failed_and_the_next_a
     assert proposal.effects == {"open_vent": ["vent"]}, "the effects are mined off the kept proposal"
 
 
+def _reader_source(proposal, tool):
+    return next(r for r in proposal.readers if r.tool == tool).source.strip()
+
+
 def test_after_the_last_attempt_the_proposal_with_the_fewest_failing_shapes_is_kept_and_assisted(tmp_path):
     worse = proposal_json(vent="def read(result):\n    return {'vent': result[99]}",
                           climate="def read(result):\n    return {'warmth': result[99]}")
@@ -440,7 +443,7 @@ def test_after_the_last_attempt_the_proposal_with_the_fewest_failing_shapes_is_k
                                          traces, tmp_path)
     assert len(nodes) == readers.MAX_ATTEMPTS and proposal.assisted is True
     assert [n["failing_shapes"] for n in nodes] == [3, 2, 3, 3]
-    assert proposal.reader_for("check_climate").source.strip() == CLIMATE_READER.strip()
+    assert _reader_source(proposal, "check_climate") == CLIMATE_READER.strip()
     assert len(proposal.failures) == 2 and all("check_vent" in line for line in proposal.failures)
     # a render that cannot be satisfied leaves its proposal kept and assisted too
     traces = status_traces()

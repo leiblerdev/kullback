@@ -15,7 +15,7 @@ import pytest
 from kullback import derive as verifier_mod
 from kullback import report
 from kullback.ai.provider import RecordedModel, TestModel
-from kullback.builder import cluster, compile_env, ingest, mine, policy, user_sim
+from kullback.builder import cluster, compile_env, ingest, mine, policy
 from kullback.runner import canon, loop, regrade, route
 from kullback.runner import verdict as verdict_mod
 from kullback.runner.canon import CanonRules
@@ -28,6 +28,8 @@ from kullback.runner.records import (
     Verifier,
     as_dict,
 )
+from kullback.user.rules import derive_user_rules
+from kullback.user.simulated import SimulatedUser
 
 TOOL_BODIES = {
     "find_user_id_by_name_zip": """
@@ -225,8 +227,8 @@ def build(tmp_path_factory, request) -> dict:
                                          task_id=task.id, model="candidate/scripted", seed=1, max_turns=4)
     loop.run(candidate_state, candidate_model, router=candidate_router)
 
-    rules = user_sim.derive_user_rules(reference)
-    simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state)
+    rules = derive_user_rules(reference)
+    simulated = SimulatedUser(rules, starting_state_reader=router.state)
 
     verifier = verifier_mod.derive_verifier(task, run_state.path, write_tools=write_tools, canon=CanonRules())
     verdict = verdict_mod.verdict(run_state.path, verifier, canon, environment=environment,
@@ -393,7 +395,7 @@ def test_the_simulated_user_gives_the_recorded_facts_and_never_invents_one(build
 def test_an_unavailable_fact_reaches_the_verdict_as_an_environment_mark(tmp_path):
     """D77: the Simulated user says it has no such fact, the loop records the tag, the Verdict marks it."""
     rules = UserRules(facts=[UserFact(field="zip", value="28236")])
-    user = user_sim.SimulatedUser(rules)
+    user = SimulatedUser(rules)
     model = TestModel([{"content": "What is your email address?"}], loop=True)
     state = loop.new_run_state("unavailable", workdir=tmp_path, user=user, max_turns=2)
     loop.run(state, model)

@@ -476,15 +476,11 @@ Earlier the same day, before publish counted from the workdir status: retail wen
 round-unknown (dataset commit f1613092) with 20 References and 0 trusted, and airline was refused as a release at
 84.0% over Tasks.
 
-Readings: `.claude/reports/smoke-luna-observations-2026-09-23.md` (the section on the final numbers of the killed sol builds),
-`.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`.
-
 ## build-20260923: retail and airline on gpt-6-sol, both finished
 
 Two builds with `openai/gpt-6-sol` as the Builder on commit f913cd6 (the wave 2 integration head), a 1M window,
 compaction at 40 percent (none happened), no ceiling, both corpora in parallel, launched about 15:30 UTC. Workdirs
-`.work-retail` and `.work-airline` in that build's worktree, launcher `.claude/scripts/smoke8.sh`, logs
-`.claude/logs/smoke-<corpus>-0923-sol8.log`.
+`.work-retail` and `.work-airline` in that build's worktree.
 
 | Environment | Confirmed References | Call fidelity | Verifiers | Trusted | Open | Turns | Spend USD |
 |---|---|---|---|---|---|---|---|
@@ -495,8 +491,7 @@ compaction at 40 percent (none happened), no ceiling, both corpora in parallel, 
 The trusted counts are under review, because 49 retail and 27 airline of them rest on a second-path seed read
 from a file that several Tasks wrote at once; they will be re-derived before anything is built on them. The
 second-path Run name carries round, attempt and seed but no Task id, and eight derivations ran at once. Eight
-airline trusted Verifiers also demand only generic tokens such as `00` or `2024`. Report:
-`.claude/herdr/overhaul-0922/reports/ov-inv-verifier/report.md`, section "Round r1".
+airline trusted Verifiers also demand only generic tokens such as `00` or `2024`.
 
 Retail replays every recorded call, all 16 tools at 1.0, and finished at 18:40 UTC. Airline confirms 79.8% of its
 Tasks and 78.5% of its Runs (157 of 200). Its tool walls: book_reservation agrees on 3 of 29 calls,

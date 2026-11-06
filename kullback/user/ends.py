@@ -66,15 +66,6 @@ class FactLookup(NamedTuple):
     synthetic: bool = False
 
 
-def dict_reader(mapping: dict):
-    """A Starting state reader over a plain dict, for tests and small callers."""
-
-    class _DictReader:
-        def get(self, field: str):
-            return mapping.get(field)
-    return _DictReader()
-
-
 def _field_of(message: Any, key: str) -> str:
     if isinstance(message, dict):
         return message.get(key) or ""

@@ -1,7 +1,7 @@
 # Real-world trace candidates
 
-Four tiers of "where can we get real-world trace data from," as the orchestrator laid them out in
-`.claude/herdr/overhaul-0922/reports/ov-sources/context.md` on 2026-09-24. AppWorld is covered separately
+Four tiers of "where can we get real-world trace data from," as the orchestrator laid them out on
+2026-09-24. AppWorld is covered separately
 in docs/trace-sources/appworld.md and skipped here. Facts below were checked against each source's own
 canonical page on 2026-09-24 unless marked unverified.
 

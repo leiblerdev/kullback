@@ -283,14 +283,5 @@ def main() -> int:
     return tally.report()
 
 
-def replayed_as_jsonl(events: list[dict]) -> list[dict]:
-    """Episode record events into the JSONL event shape the comparison reads."""
-    out = []
-    for event in events:
-        out.append({"idx": event.get("idx"), "type": event.get("type"),
-                    "payload": event.get("payload") or {}, "route": event.get("route")})
-    return out
-
-
 if __name__ == "__main__":
     sys.exit(main())

@@ -24,7 +24,6 @@ from gates.verifier_fixtures import (
     call,
     derive,
     empty_run,
-    extra_write_run,
     failed_run,
     make_run,
     other_reason_run,
@@ -300,7 +299,6 @@ def test_a_user_side_write_keeps_its_requestor(tmp_path):
     verifier = V.derive_verifier(TASK, ref, [], CanonRules())
     write = [a for a in verifier.atoms if S.atom_payload(a)["kind"] == "write"][0]
     assert S.atom_payload(write)["requestor"] == "user"
-    assert V.export_tau2_actions(verifier)[0]["requestor"] == "user"
 
 
 def test_write_tools_can_come_from_the_event_marking(tmp_path):
@@ -450,32 +448,6 @@ def test_a_judge_atom_is_never_answered_by_code(tmp_path):
         final="No. Your order #W123 is cancelled and 150.0 is refunded, deal with it."))
     assert S.check_run(derive(tmp_path), rude, CanonRules()) == (True, None)
     assert S.check_run(verifier, rude, CanonRules()) == (False, "hard.k2")
-
-
-# --- tau2 export ----------------------------------------------------------
-
-def test_export_tau2_actions_shape(tmp_path):
-    actions = V.export_tau2_actions(derive(tmp_path))
-    assert actions == [{
-        "action_id": "t1_0",
-        "requestor": "assistant",
-        "name": "cancel_pending_order",
-        "arguments": {"order_id": "#W123", "reason": "no longer needed"},
-        "info": None,
-    }]
-
-
-def test_export_skips_forbidden_writes(tmp_path):
-    verifier = derive(tmp_path, reruns=[alt_path_run(), failed_run()])
-    actions = V.export_tau2_actions(verifier)
-    assert [a["arguments"]["order_id"] for a in actions] == ["#W123"]
-
-
-def test_export_can_be_limited_to_required_writes(tmp_path):
-    verifier = derive(tmp_path, reruns=[alt_path_run(), extra_write_run()])
-    assert len(V.export_tau2_actions(verifier)) == 2
-    required_only = V.export_tau2_actions(verifier, include_allowed=False)
-    assert [a["arguments"]["order_id"] for a in required_only] == ["#W123"]
 
 
 # --- which stated facts the answer must repeat (D43) ----------------------

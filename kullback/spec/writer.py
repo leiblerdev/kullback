@@ -5,7 +5,7 @@ One model session reads the Intent facts, the policy, the tool list and, through
 (spec/items.py: state, event, text and judge items), each with gate, weight and provenance (the Intent
 facts it answers or a verbatim policy line). It never sees a Run, a Reference, a Verifier or an End
 state: the inputs come from the Environment's own files and `writer_tools.refuse_run_inputs` refuses
-anything else. Nothing here reads the Reference index (spec/witness.py does, for the witness flag).
+anything else. Nothing here reads the Reference index.
 
 Code decides what stands, in the tool: an item naming a value no world row, policy line or user turn
 holds is refused with the reason, as is an item with no provenance or resting on unwitnessed facts
@@ -994,12 +994,3 @@ def ask_confirm(workdir: Path, task_id: str, model: Any, ceiling_usd: Optional[f
     added = [check for check in after.checks if check.id not in held and check.demand.get("kind") == "before"
              and check.demand.get("first") == I.CONFIRM_TURN]
     return {"asked": True, "added": len(added)}
-
-
-def spoken_intent(task_id: str, text: str) -> SpecIntent:
-    """Spoken user text as one volunteered fact per sentence: the stand-in until a mined Intent exists."""
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text or "") if s.strip()]
-    facts = [IntentFact(id=f"f{n}", text=s, stance="volunteered", source=FactSource(recording="spoken", turn=0))
-             for n, s in enumerate(sentences)]
-    return SpecIntent(task_id=task_id, facts=facts, text=intent_text(facts))
-

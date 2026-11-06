@@ -8,7 +8,7 @@ field that this corpus never showed ("booking reference" for `reservation_id`), 
 word has to appear on a page that was fetched, or it is dropped. A generic core (email, name,
 phone, address, postal code) is the same in every domain and ships as code.
 
-`user_sim.py` reads the result: the value patterns say what a user turn states, the cues say what
+`user/rules.py` reads the result: the value patterns say what a user turn states, the cues say what
 an agent turn asks for, the prefix says how a stated id is stored.
 """
 

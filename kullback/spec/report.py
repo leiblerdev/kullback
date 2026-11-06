@@ -21,12 +21,6 @@ from kullback.spec.trust import FLAGS, NO_VERIFIER, REASONS, TIERS, TaskTier, wo
 
 # The report file in the workdir, one per build.
 REPORT_FILE = "tiers.json"
-TABLE_HEADER = ("| Build | Corpus | Verifier from | Tasks | Trusted | Untrusted "
-                "| No intent | Not examined | Not enough truth | Open ruling | Constructed Run passed | Stray untested "
-                "| Reference passes "
-                "| Solvable | Trusted by Reference (right, wrong, mixed, unknown) | Code |")
-
-
 def code_hashes(rows: list[dict]) -> list[str]:
     """The distinct code hashes the rows were scored under, sorted; a row without one adds nothing."""
     return sorted({str(row["code_hash"]) for row in rows if row.get("code_hash")})
@@ -92,24 +86,6 @@ def header_line(report: dict) -> str:
     """The report's head: the foundation and the one code hash its rows were scored under, or "mixed"."""
     code = report.get("code_hash")
     return f"tier report, verifier from the Spec, code {code[:SHORT] if code else 'mixed'}"
-
-
-def _code_cell(report: dict) -> str:
-    code = report.get("code_hash")
-    return code[:SHORT] if code else ("mixed" if code_hashes(report.get("rows") or []) else "")
-
-
-def table_line(report: dict) -> str:
-    """One row under TABLE_HEADER, the format docs/builds/README.md keeps."""
-    counts, reasons, flags = report["tiers"], report.get("reasons") or {}, report.get("flags") or {}
-    split = report.get("trusted_by_reference")
-    by_class = ("n/a" if split is None else
-                ", ".join(str(split.get(cls, 0)) for cls in ("right", "wrong", "mixed", "unknown")))
-    cells = [report.get("build") or "", report.get("corpus") or "", "spec", str(report["tasks"]),
-             *(str(counts[tier]) for tier in TIERS), *(str(reasons.get(reason, 0)) for reason in REASONS),
-             *(f"{flags.get(flag, 0)} of {flags.get(flag, 0) + flags.get(f'{flag}_false', 0)}" for flag in FLAGS),
-             by_class, _code_cell(report)]
-    return "| " + " | ".join(cells) + " |"
 
 
 def write_report(workdir: Any, *, corpus: Optional[str] = None, build: Optional[str] = None,

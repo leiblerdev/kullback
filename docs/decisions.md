@@ -1,7 +1,7 @@
 # Decisions
 
 The decisions that govern the harness now, one entry each, by area; retired numbers are indexed at the end so citations resolve.
-A decision changes by a new D number: the old entry moves to Retired with "superseded by D<n>"; numbers are never reused; next free: D442.
+A decision changes by a new D number: the old entry moves to Retired with "superseded by D<n>"; numbers are never reused; next free: D443.
 The full history is docs/decision-log.md in git, last held at commit 8c6a2d00cf7a407f65b770a0fed1fcfb4eb8b646.
 
 ## World and builder
@@ -1231,8 +1231,8 @@ gates/ (gates.PROTECTED). Where: kullback/runner/code_hash.py.
 
 D334 (2026-10-07). Dead code no command, module or script reaches is deleted (vulture plus reference counts): builder/memory.py, builder/triage.py,
 agent/reading.py, builder/body_skill.py, the model-written body path and the Intent writer in builder/intent.py; builder/skills.py, the container
-world and cheat suite, runner/world/birth.py, the tau-mirroring ai and agent surfaces, the hub and documented CLI commands are kept on purpose.
-Where: docs only.
+world and cheat suite, runner/world/birth.py, the tau-mirroring ai and agent surfaces, the hub and documented CLI commands are kept on purpose;
+part superseded by D442. Where: docs only.
 
 D364 (2026-10-12). The heldout 100 (unseen Tasks, blind label per Verifier against benchmark gold as a ruler) passed every pre-registered bar, and
 trusted is not right: the wrong Verifiers that reached trusted leaned on the Reference, which D365 answers. Where: docs only.
@@ -1251,6 +1251,13 @@ gate values and recording-only transfer gates, which D387 replaces. Where: docs 
 
 D391 (2026-10-17). The 100 again and the 253 on the gate and stray head held every bar but the stray filter; nearly every no_base Task left by D387
 sits on gated whole-field lists. Where: docs only.
+
+D442 (2026-11-06). Code with no live caller is cut from the public repo, with tests whose only subject it was; every `kullback` command stays and
+behaviour does not change: agent/types.py, the examiner must_not shim, builder/skills.py, builder/user_sim.py, the workdir store (store.py,
+store_specs.py), the container world, grader and cheat suite, examiner/goal.py, spec/witness.py, the organisation card, unused helpers, unused scripts.
+This overrides D334's "kept on purpose" for builder/skills.py, the container world and cheat suite, and the two
+tau-mirroring surfaces agent/types.py and the catalog and limits Provider protocols. Rows naming those files, D402's organisation card
+among them, are read through git history. builder/policy.py, builder/parallel.py and builder/vocabulary.py stay. Where: docs only.
 
 ## Retired
 

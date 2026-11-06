@@ -14,7 +14,6 @@ from kullback.builder.cluster import (
     category_signature,
     cluster_runs,
     confirmed_write_calls,
-    dissents,
     grouping_fingerprint,
     idf_weights,
     moved_input,
@@ -130,9 +129,8 @@ def test_runs_of_one_request_share_a_task_whatever_each_wrote_and_the_task_shows
     assert sorted(t.run_ids for t in tasks) == [["t1", "t2"], ["t3"]]
     together = next(t for t in tasks if t.run_ids == ["t1", "t2"])
     assert together.write_labels == {"t1": ["cancel_order"], "t2": []}
-    assert dissents(together)
     alone = next(t for t in tasks if t.run_ids == ["t3"])
-    assert alone.write_labels == {"t3": ["modify_address"]} and not dissents(alone)
+    assert alone.write_labels == {"t3": ["modify_address"]}
 
 
 def test_a_category_gathers_tasks_by_the_write_set_most_of_their_runs_carry():

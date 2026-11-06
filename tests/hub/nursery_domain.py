@@ -160,10 +160,8 @@ class FakeHub:
     rather than around a boundary that only exists in tests.
     """
 
-    def __init__(self, *, organisation_card_supported: bool = False):
+    def __init__(self):
         self.repos: dict[str, dict] = {}
-        self.organisation_card_supported = organisation_card_supported
-        self.organisation_cards: dict[str, str] = {}
         self.messages: list[str] = []
 
     def create_repo(self, repo_id: str) -> str:
@@ -196,15 +194,6 @@ class FakeHub:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(body)
         return out
-
-    def set_organisation_card(self, organisation: str, markdown: str) -> str:
-        from kullback.hub.client import HubError
-
-        if not self.organisation_card_supported:
-            raise HubError("this host has no API for an organisation profile")
-        self.organisation_cards[organisation] = markdown
-        return f"https://example.invalid/{organisation}"
-
 
 def build_unclosed_workdir(workdir: Path) -> Path:
     """A build killed before any round closed: no rounds.json, four Tasks, three confirmed, two trusted.

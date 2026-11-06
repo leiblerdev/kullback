@@ -11,8 +11,9 @@ The package is `kullback` at the repository root, no `src/` (D129). Each subpack
 ```
 kullback/
   ai/         the provider layer: provider (the Model interface, the offline models, the HTTP models),
-              anthropic and openai_compatible (the streaming adapters), stream, events, messages,
-              pricing, usage, retry, model_catalog, model_limits
+              anthropic, openai_compatible and google_interactions (the streaming adapters), stream, events,
+              messages, pricing, usage, retry, model_catalog, model_limits, calllog, callrollup, streamlog,
+              warmup
   agent/      the shared agent core: messages, tools, base_tools, events, loop, harness, extensions,
               session/, context, compaction, skills
   runner/     records, canon, confinement, budget, loop, route, verdict, validate, judge, regrade,
@@ -23,7 +24,7 @@ kullback/
               hook, ledger (the one gates.json writer both agents use)
   user/       the Simulated user as an agent: simulated, agent, rules, ends, guards, fidelity (D214)
   builder/    ingest, sources/ (one reader per trace format), mine, cluster, compile_env,
-              policy, user_sim, sandbox, synth, vocabulary, search, parallel,
+              policy, sandbox, synth, vocabulary, search, parallel,
               session (the Builder as an extension on the agent core, behind `kullback build`)
   examiner/   reference (D111 confirmation), stage (the derive stage), plan, judge,
               findings, lifecycle, session (the Examiner as an extension, called by the Builder)
@@ -37,8 +38,7 @@ kullback/
   tui/        the terminal screen
   cli.py      the command line
   graph.py, synthesise.py, domain.py, difficulty.py, laws.py, consistency.py, claims.py, sampling.py,
-  round_snapshot.py, store.py, store_specs.py, derive.py, variants.py, curriculum.py, processes.py,
-  container_*.py   one-file modules the frontends share
+  round_snapshot.py, derive.py, variants.py, curriculum.py, processes.py   one-file modules the frontends share
 tests/
   ai/ runner/ builder/ ...   one directory per package, mirroring the layout above
   fixtures/   the small tau2 file and tau2-bench's retail domain files

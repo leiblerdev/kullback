@@ -1,7 +1,7 @@
 # The writer's disagreement with the Reference, against the sidecar class (D327)
 
-Measured on 2026-10-07, code only, 0 USD, on the vf-live copies of retail and airline (read only). Script:
-`.claude/herdr/fix-1007/fx-trust-measure.py`, which tiers every Task with `spec.trust.tier_of_task` exactly as
+Measured on 2026-10-07, code only, 0 USD, on the vf-live copies of retail and airline (read only). The script
+tiers every Task with `spec.trust.tier_of_task` exactly as
 `intent_tiers` does and reads `writer_disagrees` and `fresh_runs` off each row. Not pre-registered: the flag does
 not gate, so there was no rule to hold it to; the numbers are reported as they came out.
 

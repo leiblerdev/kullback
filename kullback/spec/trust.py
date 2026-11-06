@@ -123,11 +123,6 @@ def run_models(run: Run) -> set[str]:
     return named
 
 
-def is_replay(run: Run) -> bool:
-    """A Run the recorded agent played, whatever its run id: the recorded model is among its models."""
-    return RECORDED in run_models(run)
-
-
 def is_fresh(run: Run) -> bool:
     """A live Candidate Run: it names a model and the recorded one is not among them."""
     models = run_models(run)

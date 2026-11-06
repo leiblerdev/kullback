@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 
 from kullback.ai.provider import TestModel
-from kullback.builder import user_sim
 from kullback.builder import vocabulary as vb
-from kullback.builder.search import TestSearch as ScriptedSearch
 from kullback.runner.records import EntitySchema, RawPtr, ToolCall, ToolSig, Trace, Turn
+from kullback.user.rules import asked_fields, extracted_values
+from tests.builder.search_double import ScriptedSearch
 
 
 def _ptr(i: int) -> RawPtr:
@@ -90,8 +90,8 @@ def test_a_value_shape_that_matches_ordinary_words_gives_no_scanning_pattern():
     vocab = vb.derive(traces, schema, [sig("get_reservation_details", "reservation_id")])
     spec = vocab.get("reservation_id")
     assert spec.pattern is None and spec.asked_only is not None
-    assert user_sim.extracted_values("GHIJKL", asked=["reservation_id"], vocab=vocab) == [("reservation_id", "GHIJKL")]
-    assert user_sim.extracted_values("please GHIJKL", vocab=vocab) == []
+    assert extracted_values("GHIJKL", asked=["reservation_id"], vocab=vocab) == [("reservation_id", "GHIJKL")]
+    assert extracted_values("please GHIJKL", vocab=vocab) == []
     states = ["TX", "NY", "CA", "WA"]
     traces = [trace(f"s{i}", f"No, I do not want insurance. Ship it to {states[i]} please, no rush.",
                     [("book", {"insurance": "no", "state": states[i]})]) for i in range(4)]
@@ -100,7 +100,7 @@ def test_a_value_shape_that_matches_ordinary_words_gives_no_scanning_pattern():
     state = vocab.get("state")
     assert state is not None and state.pattern is None and state.asked_only is None, "two letters is any word"
     assert vocab.get("insurance").pattern is None, '"no" goes with every Run, not with the booking'
-    assert user_sim.extracted_values("No, thanks.", vocab=vocab) == []
+    assert extracted_values("No, thanks.", vocab=vocab) == []
 
 
 def test_a_few_distinct_values_are_matched_by_listing_them():
@@ -109,7 +109,7 @@ def test_a_few_distinct_values_are_matched_by_listing_them():
     vocab = vb.derive(traces, EntitySchema(tables=[]), [sig("book_reservation", "cabin")])
     cabin = vocab.get("cabin")
     assert cabin.kind == "value" and re.search(cabin.pattern, "I want basic economy")
-    assert user_sim.extracted_values("Business class, please.", vocab=vocab) == [("cabin", "Business")]
+    assert extracted_values("Business class, please.", vocab=vocab) == [("cabin", "Business")]
 
 
 def test_an_id_shape_of_letters_and_digits_only_matches_where_a_digit_is():
@@ -120,15 +120,15 @@ def test_an_id_shape_of_letters_and_digits_only_matches_where_a_digit_is():
     spec = vocab.get("reservation_id")
     pattern = spec.pattern or spec.asked_only
     assert re.search(pattern, "my flight reservation is ZFA14B").group(0) == "ZFA14B"
-    assert user_sim.extracted_values("my flight reservation is ZFA14B", asked=["reservation_id"], vocab=vocab) \
+    assert extracted_values("my flight reservation is ZFA14B", asked=["reservation_id"], vocab=vocab) \
         == [("reservation_id", "ZFA14B")]
 
 
 def test_the_derived_vocabulary_drives_user_sim():
     vocab = vb.derive(retail_traces(), RETAIL_SCHEMA, RETAIL_SIGS)
-    assert user_sim.extracted_values("Order W1234567 please.", vocab=vocab) == [("order_id", "#W1234567")]
-    assert user_sim.asked_fields("Could you give me the order number?", vocab=vocab) == ["order_id"]
-    assert user_sim.asked_fields("Could you give me the order number?") == [], "the generic core knows no orders"
+    assert extracted_values("Order W1234567 please.", vocab=vocab) == [("order_id", "#W1234567")]
+    assert asked_fields("Could you give me the order number?", vocab=vocab) == ["order_id"]
+    assert asked_fields("Could you give me the order number?") == [], "the generic core knows no orders"
 
 
 # --- the web ----------------------------------------------------------------

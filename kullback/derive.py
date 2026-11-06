@@ -705,26 +705,3 @@ def _first_with(runs: list[Run], effects: list[dict], key: str):
         if key in effect:
             return run, effect[key]
     raise KeyError(key)
-
-
-
-# --- export ----------------------------------------------------------------
-
-def export_tau2_actions(verifier: Verifier, *, include_allowed: bool = True) -> list[dict]:
-    """The Verifier's write atoms in tau2's `evaluation_criteria.actions` shape.
-
-    A write the trace recorded as the user's own carries `requestor: user` (D71), which is the field
-    tau2's Action uses to say who performs it; dropping it asked the Candidate agent to do the user's work.
-    """
-    wanted = ("required", "allowed") if include_allowed else ("required",)
-    order, arguments = [], {}
-    for atom in verifier.atoms:
-        payload = atom_payload(atom)
-        if payload.get("kind") == "write" and atom.kind in wanted:
-            order.append((atom.id, payload["tool"], payload.get("requestor") or "assistant"))
-            arguments.setdefault(atom.id, {})
-        elif payload.get("kind") == "write_value" and not payload.get("filled"):
-            arguments.setdefault(atom.id.rsplit(".", 1)[0], {})[payload["field"]] = payload.get("raw")
-    return [{"action_id": f"{verifier.task_id}_{number}", "requestor": requestor, "name": tool,
-             "arguments": arguments.get(atom_id, {}), "info": None}
-            for number, (atom_id, tool, requestor) in enumerate(order)]

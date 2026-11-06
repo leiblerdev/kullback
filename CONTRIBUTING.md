@@ -6,7 +6,7 @@ Thanks for looking. This file says how to get a change in and what a change has 
 
 Open an issue for a bug, a wrong number in a report, a trace format I do not read, or a place where the design and the code disagree. Open a pull request for a fix or a small feature. For anything that changes a decision in `docs/decisions.md`, open an issue first and say which decision and why; read that entry, and its history in git, before arguing against it.
 
-Good first contributions: an ingest mapper for a trace format you use (OpenTelemetry GenAI, Claude Code JSONL, MCP logs), a canonicalization rule with a test, a survivor from `mutmut` turned into a real test, a number in the README's Environments table that you can check or extend.
+Good first contributions: an ingest mapper for a trace format you use (OpenTelemetry GenAI, Claude Code JSONL, MCP logs), a canonicalization rule with a test, a survivor from `mutmut` turned into a real test, a number in the README's "What we did" section that you can check or extend.
 
 ## Setup
 
@@ -23,7 +23,7 @@ Python 3.11 or newer. The test suite holds over 4,800 tests and never calls a mo
 
 1. Branch from `main`. Name it after the change, not after yourself.
 2. Write the failing test first, then the code. Every module has one test file, `tests/<package>/test_<module>.py` (the frontends' tests sit at `tests/` directly); new behaviour goes there, and a test of another package's module goes in that package's file rather than beside the one that happened to build the fixture. A world several test files share lives in `tests/<package>/<name>_fixtures.py`, not in a second test file. Name a test for the behaviour it states, in a sentence: `test_a_cached_verdict_is_reused_when_no_version_changed`, not `test_regrade_2`. Prefer widening a parametrize over copying a test body.
-3. Run `uv run pytest` and paste the summary line in the pull request. Run `uv run lint-imports` too: the dependency direction between `kullback`'s packages is an import-linter contract in `pyproject.toml` (D121, D123, D129). If you touched `kullback/runner/`, also run the import boundary check: `uv run python -c "import kullback.runner.validate as v, pathlib; print(v.import_boundary_check(pathlib.Path('kullback')))"`.
+3. Run `uv run pytest` and paste the summary line in the pull request. Run `uv run lint-imports` too: the dependency direction between `kullback`'s packages is an import-linter contract in `pyproject.toml` (D121, D123, D129). If you touched `kullback/runner/`, also run the import boundary check: `uv run pytest tests/runner/test_boundary.py`.
 4. Open the pull request against `main`. Say what changed, why, and what you measured. `main` is protected: every pull request needs an approving review from the maintainer (`.github/CODEOWNERS`), every conversation resolved, and no force pushes.
 
 Mutation testing (`uv run mutmut run`) is not in CI because it takes long; run it when you touch verdict, canon, route or verifier, and mention survivors you looked at.
@@ -36,7 +36,7 @@ The raw trace is the only source of truth. Files are stored byte for byte and ha
 
 No model calls in tests. `ALLOW_MODEL_REQUESTS` is `False` by default and `conftest.py` keeps it there. Code that needs a model takes a `Model` as a parameter and never constructs one; tests pass one of the three offline models `kullback/ai/provider.py` defines, `TestModel`, `RecordedModel` or `MemoModel`. Those three and the two autouse fixtures in `tests/conftest.py` are the only stand-ins the suite keeps: a fake belongs at the provider boundary or at a parameter the production code already takes, and patching a module's internals is not a way to make a test pass. A test that has to reach inside is telling you the seam is missing.
 
-The Runner never imports the Builder, and nothing on the Runner side ever reads a Verifier except `verdict.py` reading the one it is given. `validate.import_boundary_check` scans for this and `tests/runner/test_boundary.py` asserts it (D89, D91).
+The Runner never imports the Builder, and nothing on the Runner side ever reads a Verifier except `verdict.py` reading the one it is given. `import_boundary_check` in `runner/boundary.py` scans for this and `tests/runner/test_boundary.py` asserts it (D89, D91).
 
 Two agents, one boundary between them (D122, D123). The Builder writes the Environment and never a Verifier or a probe; the Examiner writes Verifiers and probes and never reads a tool body, the Starting state, the schema, the Environment or the sandbox (`examiner.stage.inputs_from` refuses a store that names one, and the Examiner's `tool_call` hook refuses a call that does); neither writes under `kullback/gates/` or `kullback/runner/`. Every accept-or-reject rule is a pure function in `kullback/gates/` returning a `GateResult`, registered in `GATES`; a tool of either agent calls a gate and reports what it said, and never decides a ruling itself. `tests/gates/test_package.py` scans both agents' source for a ruling written outside the registry.
 
@@ -50,7 +50,7 @@ Errors from a customer's tools keep their verbatim payload beside the classified
 
 Every module is one file with one sentence of purpose at the top. Each has a size band in design section 10. If you cannot fit, say why in the pull request rather than growing silently.
 
-Model-written code (tool bodies, policy predicates, Verifier atoms) runs only where a gate stands in front of it. At build time `builder/sandbox.py` and `builder/policy.py` run it in a subprocess. In process, a toolkit loads through `runner/world/loading.py`, a reader through `gates/tool_runs.py`, a constraint through `gates/artifacts.py`'s `_run_predicate`, and a Verifier atom through `runner/atom_context.py` and `runner/target.py`'s `hard_holds`. Each in-process path runs a confinement check from `runner/confinement.py` or `gates/confinement.py` before the source runs, and every predicate `exec` gets its own copy of the builtins allowlist, so code that empties or edits `__builtins__` takes nothing from the next predicate. Do not add an `exec` or `eval` elsewhere.
+Model-written code (tool bodies, policy predicates, Verifier atoms) runs only where a gate stands in front of it. At build time `builder/sandbox.py` runs it in a subprocess. In process, a toolkit loads through `runner/world/loading.py`, a reader through `gates/tool_runs.py`, a constraint through `gates/artifacts.py`'s `_run_predicate`, and a Verifier atom through `runner/atom_context.py` and `runner/target.py`'s `hard_holds`. Each in-process path runs a confinement check from `runner/confinement.py` or `gates/confinement.py` before the source runs, and every predicate `exec` gets its own copy of the builtins allowlist, so code that empties or edits `__builtins__` takes nothing from the next predicate. Do not add an `exec` or `eval` elsewhere.
 
 ## Writing
 
