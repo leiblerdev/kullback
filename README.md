@@ -52,7 +52,8 @@ Runs and `report` writes `report.md`. To build an Environment from your own trac
 `kullback build`; [docs/trace-intake.md](docs/trace-intake.md) covers the trace formats, and
 [docs/README.md](docs/README.md) lists every doc.
 
-The travel Tasks run under Harbor with Docker; Harbor's oracle agent plays each reference solution at no cost:
+The travel Tasks run under Harbor with Docker; Harbor's oracle agent plays each reference solution, but with no judge
+model most of its runs stay unscored:
 
 ```bash
 hf download leibler/travel-agency --repo-type dataset --local-dir travel-agency
