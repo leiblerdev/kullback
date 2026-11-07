@@ -148,9 +148,6 @@
     "platform_bookings TD-R23A, cancelled, dated 2026-09-01, already on file before this conversation",
     "vendor_bookings V-AMTRAK|AMD05A, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R23A, 118 USD, paid, dated 2026-10-27, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R23A, 118 USD, paid, dated 2026-10-27, already on file before this conversation"
    ]

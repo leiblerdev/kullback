@@ -182,9 +182,6 @@
     "platform_bookings TD-R38A, cancelled, dated 2026-08-30, already on file before this conversation",
     "vendor_bookings V-HTL-LAKESIDE|LKE13A, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R38A, 691 USD, paid, dated 2026-10-10, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R38A, 691 USD, paid, dated 2026-10-10, already on file before this conversation"
    ]

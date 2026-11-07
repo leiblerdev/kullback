@@ -309,9 +309,6 @@
     "platform_bookings TD-R70X, cancelled, dated 2026-09-05, already on file before this conversation",
     "vendor_bookings V-HTL-RIVERNORTH|RNR70X, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R70X, 358.75 USD, paid, dated 2026-10-27, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R70X, 358.75 USD, paid, dated 2026-10-27, already on file before this conversation"
    ]

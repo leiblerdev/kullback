@@ -181,9 +181,6 @@
    "a booking was cancelled": [
     "platform_bookings TD-R05B, cancelled, dated 2026-09-01, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R05D, 150 USD, paid, dated 2026-06-20, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R05D, 150 USD, paid, dated 2026-06-20, already on file before this conversation"
    ]

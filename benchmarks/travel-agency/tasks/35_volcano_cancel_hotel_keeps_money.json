@@ -136,10 +136,6 @@
     "vendor_bookings V-LH|LHE10A, cancelled, already on file before this conversation",
     "vendor_bookings V-LH|LHE10C, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R35A, 236 EUR, paid, dated 2026-10-25, already on file before this conversation",
-    "refunds RF-R35D, 214 EUR, paid, dated 2026-10-24, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R35A, 236 EUR, paid, dated 2026-10-25, already on file before this conversation",
     "refunds RF-R35D, 214 EUR, paid, dated 2026-10-24, already on file before this conversation"

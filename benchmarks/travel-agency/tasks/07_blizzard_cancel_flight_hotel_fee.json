@@ -170,9 +170,6 @@
     "vendor_bookings V-DELTA|DLR07A, cancelled, already on file before this conversation",
     "vendor_bookings V-DELTA|DLR07E, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R07E, 470 USD, paid, dated 2025-12-11, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R07E, 470 USD, paid, dated 2025-12-11, already on file before this conversation"
    ]

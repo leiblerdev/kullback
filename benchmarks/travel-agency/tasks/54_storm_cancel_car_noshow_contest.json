@@ -190,9 +190,6 @@
     "vendor_bookings V-DELTA|DLR54A, cancelled, already on file before this conversation",
     "vendor_bookings V-HTL-LAKESIDE|LKR54B, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R54B, 189 USD, paid, dated 2026-10-25, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R54B, 189 USD, paid, dated 2026-10-25, already on file before this conversation"
    ]

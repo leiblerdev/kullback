@@ -153,9 +153,6 @@
     "platform_bookings TD-R27A, cancelled, dated 2026-09-01, already on file before this conversation",
     "vendor_bookings V-DB|DBD09A, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R27A, 196 EUR, requested, dated 2026-10-21, already on file before this conversation"
-   ],
    "a claim or request was sent to a supplier": [
     "vendor_threads VT-R27D, 45 EUR, dated 2026-09-25, already on file before this conversation"
    ],

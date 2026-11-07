@@ -180,9 +180,6 @@
     "platform_bookings TD-R10B, cancelled, dated 2026-09-01, already on file before this conversation",
     "vendor_bookings V-DELTA|DLR10A, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R10B, 189 USD, paid, dated 2026-10-27, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R10B, 189 USD, paid, dated 2026-10-27, already on file before this conversation"
    ]

@@ -145,10 +145,6 @@
     "vendor_bookings V-HTL-LAKESIDE|LKE09C, cancelled, already on file before this conversation",
     "vendor_bookings V-KU|KUE09A, cancelled, already on file before this conversation"
    ],
-   "a chargeback was answered": [
-    "refunds RF-R34A, 420 USD, requested, dated 2026-10-27, already on file before this conversation",
-    "refunds RF-R34C, 900 USD, paid, dated 2026-10-27, already on file before this conversation"
-   ],
    "a refund was issued to the customer": [
     "refunds RF-R34A, 420 USD, requested, dated 2026-10-27, already on file before this conversation",
     "refunds RF-R34C, 900 USD, paid, dated 2026-10-27, already on file before this conversation"

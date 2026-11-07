@@ -4,8 +4,11 @@ license: mit
 language:
   - en
 task_categories:
+  - reinforcement-learning
   - text-generation
 tags:
+  - rl-environment
+  - reinforcement-learning
   - agents
   - tool-use
   - benchmark
