@@ -1,0 +1,897 @@
+{
+ "alts": {
+  "extra_reads.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "AMF-R70C"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "AMF-R70C",
+      "card_last4": "6114",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "elena.brooks@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "C-R70"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "customer_id": "C-R70"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "record_locator": "FRR70A",
+      "vendor_id": "V-FR"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "LHR70B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R70B"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "record_locator": "LHR70B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$8.refundable",
+      "currency": "EUR",
+      "destination": "original_payment",
+      "platform_booking_id": "$5.platform_booking_id",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-R70C",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-R70C",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$10.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$12.refundable",
+      "currency": "EUR",
+      "destination": "original_payment",
+      "platform_booking_id": "$10.platform_booking_id",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "max_fare_difference": 200.0,
+      "new_flight": "DL243",
+      "record_locator": "DLR70D",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$10.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "policy_id": "$16.details.insurance_policy_id"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "amount": "$15.vendor_penalty",
+      "currency": "EUR",
+      "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+      "platform_booking_id": "$4.platform_booking_id",
+      "policy_id": "$17.policy_id",
+      "reason": "sickness_or_injury"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "amount": "$8.vendor_penalty",
+      "currency": "EUR",
+      "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+      "platform_booking_id": "$5.platform_booking_id",
+      "policy_id": "$17.policy_id",
+      "reason": "sickness_or_injury"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "amount": "$12.vendor_penalty",
+      "currency": "EUR",
+      "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+      "platform_booking_id": "$10.platform_booking_id",
+      "policy_id": "$17.policy_id",
+      "reason": "sickness_or_injury"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "text": "I am so sorry for what happened. Lufthansa cancelled LHR70B and kept 84 EUR of the Light fare; the 34 EUR of taxes are refunded to your card. The Nice hotel is cancelled with its 345 EUR late fee and the other 345 EUR is refunded to your card. Your Delta flight home is now DL243 from Lisbon on 31 October for 150 USD more. The missed Ryanair flight FRR70A is not refunded, because a missed flight has nothing left to refund. Allianz approved sickness claims for the 74 EUR Ryanair fare, the 84 EUR Lufthansa kept and the 345 EUR hotel fee."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "hotel_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "AMF-R70C"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "AMF-R70C",
+      "card_last4": "6114",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "elena.brooks@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-R70C",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-R70C",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R70C"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$4.refundable",
+      "currency": "EUR",
+      "destination": "original_payment",
+      "platform_booking_id": "TD-R70C",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "max_fare_difference": 200.0,
+      "new_flight": "DL243",
+      "record_locator": "DLR70D",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "record_locator": "LHR70B",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R70B"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$8.refundable",
+      "currency": "EUR",
+      "destination": "original_payment",
+      "platform_booking_id": "TD-R70B",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R70A"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "policy_id": "INS-R70"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "amount": "$4.vendor_penalty",
+      "currency": "EUR",
+      "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+      "platform_booking_id": "TD-R70C",
+      "policy_id": "INS-R70",
+      "reason": "sickness_or_injury"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "amount": "$8.vendor_penalty",
+      "currency": "EUR",
+      "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+      "platform_booking_id": "TD-R70B",
+      "policy_id": "INS-R70",
+      "reason": "sickness_or_injury"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "amount": "$10.vendor_penalty",
+      "currency": "EUR",
+      "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+      "platform_booking_id": "TD-R70A",
+      "policy_id": "INS-R70",
+      "reason": "sickness_or_injury"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "text": "I am so sorry for what happened. Lufthansa cancelled LHR70B and kept 84 EUR of the Light fare; the 34 EUR of taxes are refunded to your card. The Nice hotel is cancelled with its 345 EUR late fee and the other 345 EUR is refunded to your card. Your Delta flight home is now DL243 from Lisbon on 31 October for 150 USD more. The missed Ryanair flight FRR70A is not refunded, because a missed flight has nothing left to refund. Allianz approved sickness claims for the 74 EUR Ryanair fare, the 84 EUR Lufthansa kept and the 345 EUR hotel fee."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R70X, cancelled, dated 2026-09-05, already on file before this conversation",
+    "vendor_bookings V-HTL-RIVERNORTH|RNR70X, cancelled, already on file before this conversation"
+   ],
+   "a refund was issued to the customer": [
+    "refunds RF-R70X, 358.75 USD, paid, dated 2026-10-27, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "charges": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 150.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R70",
+      "platform_booking_id": "TD-R70D",
+      "reason": "flight_change"
+     }
+    }
+   ],
+   "insurance_claims": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 345.0,
+      "currency": "EUR",
+      "decision_text": "Approved: V-ALLIANZ pays 345.00 EUR to the insured.",
+      "filed_at": "2026-10-29T12:00:00-04:00",
+      "paid_amount": 345.0,
+      "platform_booking_id": "TD-R70C",
+      "policy_id": "INS-R70",
+      "reason": "sickness_or_injury",
+      "status": "approved"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 74.0,
+      "currency": "EUR",
+      "decision_text": "Approved: V-ALLIANZ pays 74.00 EUR to the insured.",
+      "filed_at": "2026-10-29T12:00:00-04:00",
+      "paid_amount": 74.0,
+      "platform_booking_id": "TD-R70A",
+      "policy_id": "INS-R70",
+      "reason": "sickness_or_injury",
+      "status": "approved"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 84.0,
+      "currency": "EUR",
+      "decision_text": "Approved: V-ALLIANZ pays 84.00 EUR to the insured.",
+      "filed_at": "2026-10-29T12:00:00-04:00",
+      "paid_amount": 84.0,
+      "platform_booking_id": "TD-R70B",
+      "policy_id": "INS-R70",
+      "reason": "sickness_or_injury",
+      "status": "approved"
+     }
+    }
+   ],
+   "inventory": [
+    {
+     "cols": {
+      "seats": 2
+     },
+     "key": "V-DELTA|DL243",
+     "op": "change"
+    }
+   ],
+   "platform_bookings": [
+    {
+     "cols": {
+      "details": {
+       "cancel_event": {
+        "at": "2026-10-29T12:00:00-04:00",
+        "by": "customer"
+       },
+       "insurance_policy_id": "INS-R70",
+       "region": "EU"
+      },
+      "status": "cancelled"
+     },
+     "key": "TD-R70B",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "status": "cancelled"
+     },
+     "key": "TD-R70C",
+     "op": "change"
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 34.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "EUR",
+      "destination": "original_payment",
+      "payment_id": "PM-R70B",
+      "platform_booking_id": "TD-R70B",
+      "reason_code": "customer_cancel",
+      "source": "agent",
+      "state": "paid"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 345.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "EUR",
+      "destination": "original_payment",
+      "payment_id": "PM-R70C",
+      "platform_booking_id": "TD-R70C",
+      "reason_code": "customer_cancel",
+      "source": "agent",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R70"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "cancellation": {
+        "at": "2026-10-29T12:00:00-04:00",
+        "by": "customer",
+        "currency": "EUR",
+        "fee": 84.0,
+        "remaining_value": 34.0,
+        "returned_as": "cash"
+       },
+       "distance_km": 1630,
+       "extraordinary": false,
+       "fare_class": "Light",
+       "intra_eu": true,
+       "pax": 1,
+       "region": "EU",
+       "segments": [
+        {
+         "arr": "2026-11-02T13:40:00+01:00",
+         "dep": "2026-11-02T10:30:00+00:00",
+         "flight": "LH4417",
+         "from": "LIS",
+         "to": "NCE"
+        }
+       ],
+       "taxes": 34.0
+      },
+      "status": "cancelled"
+     },
+     "key": "V-LH|LHR70B",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "data": {
+       "cancellation": {
+        "fee": 345.0
+       },
+       "check_in": "2026-11-02",
+       "check_out": "2026-11-06",
+       "city": "Nice",
+       "property_policy": {
+        "cancel_free_until": "2026-10-26T15:00:00+01:00",
+        "currency": "EUR",
+        "late_cancel_fee_amount": 345.0,
+        "rule_id": "P-HILTON"
+       }
+      },
+      "status": "cancelled"
+     },
+     "key": "V-AMALFI-PROP|AMF-R70C",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "data": {
+       "fare_class": "Classic",
+       "history": [
+        {
+         "at": "2026-10-29T12:00:00-04:00",
+         "changed_from": "DL241",
+         "cost": 150.0
+        }
+       ],
+       "pax": 1,
+       "region": "US",
+       "segments": [
+        {
+         "arr": "2026-10-31T15:40:00-04:00",
+         "dep": "2026-10-31T11:05:00+00:00",
+         "flight": "DL243",
+         "from": "LIS",
+         "to": "JFK"
+        }
+       ]
+      }
+     },
+     "key": "V-DELTA|DLR70D",
+     "op": "change"
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-3] Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted? (met = 1: Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "P-LIAB-3"
+   },
+   {
+    "checkpoint": "- [judge.P-HOTEL-LAW] Does the agent follow this policy line: [SHOULD P-HOTEL-LAW] No statute here gives a refund when a hotel cancels; vendor contract and TripDesk policy govern that case? (met = 1: Does the agent follow this policy line: [SHOULD P-HOTEL-LAW] No statute here gives a refund when a hotel cancels; vendor contract and TripDesk policy govern that case?)",
+    "scope": [
+     "hotel_cancel"
+    ],
+    "tag": "P-HOTEL-LAW"
+   },
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-11] Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city? (met = 1: Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "IP-11"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CV-CANCEL-STATUS] Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer? (met = 1: Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer?)",
+    "scope": [
+     "flight_cancel",
+     "hotel_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CV-CANCEL-STATUS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FLIGHT-PORT] Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard? (met = 1: Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "CR-FLIGHT-PORT"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.INS-INSURER] Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy? (met = 1: Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "INS-INSURER"
+   },
+   {
+    "checkpoint": "- [judge.INS-UNCOVERED] Does the agent follow this policy line: [SHOULD INS-UNCOVERED] Before filing a reason the plan's covered_reasons do not list, the agent should tell the customer the insurer will deny it, and should file it only where the message asks for the claim anyway? (met = 1: Does the agent follow this policy line: [SHOULD INS-UNCOVERED] Before filing a reason the plan's covered_reasons do not list, the agent should tell the customer the insurer will deny it, and should file it only where the message asks for the claim anyway?)",
+    "scope": [
+     "insurance_file_claim"
+    ],
+    "tag": "INS-UNCOVERED"
+   },
+   {
+    "checkpoint": "- [judge.INS-DELAY] Does the agent follow this policy line: [MUST INS-DELAY] [V1] Trip delay pays only once the delay reaches the plan's trip_delay_min_hours, and at most the plan's trip_delay_daily_max per traveller for each started day of delay: insurance_file_claim caps a trip_delay claim at that? (met = 1: Does the agent follow this policy line: [MUST INS-DELAY] [V1] Trip delay pays only once the delay reaches the plan's trip_delay_min_hours, and at most the plan's trip_delay_daily_max per traveller for each started day of delay: insurance_file_claim caps a trip_delay claim at that?)",
+    "scope": [
+     "insurance_file_claim"
+    ],
+    "tag": "INS-DELAY"
+   },
+   {
+    "checkpoint": "- [judge.GP-RAIL-EXCHANGE] Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it? (met = 1: Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "GP-RAIL-EXCHANGE"
+   },
+   {
+    "checkpoint": "- [judge.TP-NOT-TRIPDESK] Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it? (met = 1: Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "TP-NOT-TRIPDESK"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.WC-U2-CANCEL] Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives? (met = 1: Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives?)",
+    "scope": [
+     "flight_cancel",
+     "issue_refund"
+    ],
+    "tag": "WC-U2-CANCEL"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that the missed Ryanair flight FRR70A is not refunded. (met = 1: In its replies to the customer, does the agent do this: States that the missed Ryanair flight FRR70A is not refunded.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that this is because a missed flight has nothing left to refund. (met = 1: In its replies to the customer, does the agent do this: States that this is because a missed flight has nothing left to refund.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: States that Allianz approved sickness claims for the 74 EUR Ryanair fare, the 84 EUR Lufthansa kept and the 345 EUR hotel fee. (met = 1: In its replies to the customer, does the agent do this: States that Allianz approved sickness claims for the 74 EUR Ryanair fare, the 84 EUR Lufthansa kept and the 345 EUR hotel fee.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   }
+  ],
+  "message": "I was assaulted in Porto on my first night and was in hospital until yesterday. The police are already handling the assault, so I need nothing from you on that. The Porto stay was refunded already, less its one night fee, and I missed the Ryanair to Faro (FRR70A). I want to go home: please cancel the Lisbon to Nice flight LHR70B, I know Lufthansa keeps 84 EUR of the Light fare, and the Nice hotel AMF-R70C even with its 345 EUR late fee, and move my Delta flight home DLR70D to DL243 from Lisbon on 31 October, I can pay up to 200 USD more. I have Allianz through you and the hospital papers: refund what you can and claim the rest from Allianz, the Ryanair too. elena.brooks@example.com, card 6114.",
+  "strict_tables": [],
+  "task": "70_assault_hospital_cancel_rest_claim",
+  "token": "ef509b9a55b1b821a0bbe2c14ba25cdd"
+ },
+ "instruction": "I was assaulted in Porto on my first night and was in hospital until yesterday. The police are already handling the assault, so I need nothing from you on that. The Porto stay was refunded already, less its one night fee, and I missed the Ryanair to Faro (FRR70A). I want to go home: please cancel the Lisbon to Nice flight LHR70B, I know Lufthansa keeps 84 EUR of the Light fare, and the Nice hotel AMF-R70C even with its 345 EUR late fee, and move my Delta flight home DLR70D to DL243 from Lisbon on 31 October, I can pay up to 200 USD more. I have Allianz through you and the hospital papers: refund what you can and claim the rest from Allianz, the Ryanair too. elena.brooks@example.com, card 6114.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R70\": {\n   \"customer_id\": \"C-R70\",\n   \"email\": \"elena.brooks@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Elena Brooks\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"documents\": {\n  \"DOC-R70A\": {\n   \"amount\": null,\n   \"currency\": null,\n   \"customer_id\": \"C-R70\",\n   \"doc_id\": \"DOC-R70A\",\n   \"kind\": \"hospital_discharge\",\n   \"meta\": {\n    \"category\": \"medical\",\n    \"date\": \"2026-10-28\",\n    \"note\": \"injuries after an assault; advised to fly home\"\n   },\n   \"platform_booking_id\": \"TD-R70C\",\n   \"received_at\": \"2026-10-28T16:00:00+00:00\",\n   \"received_via\": \"email\",\n   \"routed\": 0\n  }\n },\n \"insurance_policies\": {\n  \"INS-R70\": {\n   \"cancelled_at\": null,\n   \"cfar\": false,\n   \"covered_booking_ids\": [\n    \"TD-R70A\",\n    \"TD-R70B\",\n    \"TD-R70C\"\n   ],\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R70\",\n   \"insurer_id\": \"V-ALLIANZ\",\n   \"payment_id\": null,\n   \"plan\": \"OneTripPrime\",\n   \"policy_id\": \"INS-R70\",\n   \"premium\": 58.0,\n   \"premium_refunded\": 0.0,\n   \"purchased_at\": \"2026-09-05T10:40:00-04:00\",\n   \"status\": \"active\",\n   \"trip_cost\": 882.0,\n   \"trip_end\": \"2026-11-07T15:10:00-05:00\",\n   \"trip_start\": \"2026-10-24T18:00:00-04:00\"\n  }\n },\n \"inventory\": {\n  \"V-DELTA|DL243\": {\n   \"arr\": \"2026-10-31T15:40:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-31T11:05:00+00:00\",\n   \"dest\": \"JFK\",\n   \"fare_difference\": 150.0,\n   \"kind\": \"flight\",\n   \"origin\": \"LIS\",\n   \"product_id\": \"DL243\",\n   \"seats\": 3,\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"payments\": {\n  \"PM-R70A\": {\n   \"amount\": 74.0,\n   \"card_last4\": \"6114\",\n   \"created_at\": \"2026-09-05T10:00:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R70\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R70A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R70B\": {\n   \"amount\": 118.0,\n   \"card_last4\": \"6114\",\n   \"created_at\": \"2026-09-05T10:05:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R70\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R70B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R70C\": {\n   \"amount\": 690.0,\n   \"card_last4\": \"6114\",\n   \"created_at\": \"2026-09-05T10:10:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R70\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R70C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R70D\": {\n   \"amount\": 980.0,\n   \"card_last4\": \"6114\",\n   \"created_at\": \"2026-09-05T10:30:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R70\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R70D\",\n   \"status\": \"captured\"\n  },\n  \"PM-R70X\": {\n   \"amount\": 410.0,\n   \"card_last4\": \"6114\",\n   \"created_at\": \"2026-09-05T10:02:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R70\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R70X\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R70A\": {\n   \"created_at\": \"2026-09-05T10:00:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R70\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R70\",\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R70A\",\n   \"platform_booking_id\": \"TD-R70A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 74.0,\n   \"vendor_booking_id\": \"FRR70A\",\n   \"vendor_id\": \"V-FR\"\n  },\n  \"TD-R70B\": {\n   \"created_at\": \"2026-09-05T10:05:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R70\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R70\",\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R70B\",\n   \"platform_booking_id\": \"TD-R70B\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 118.0,\n   \"vendor_booking_id\": \"LHR70B\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"TD-R70C\": {\n   \"created_at\": \"2026-09-05T10:10:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R70\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R70\",\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R70C\",\n   \"platform_booking_id\": \"TD-R70C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 690.0,\n   \"vendor_booking_id\": \"AMF-R70C\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  },\n  \"TD-R70D\": {\n   \"created_at\": \"2026-09-05T10:30:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R70\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R70D\",\n   \"platform_booking_id\": \"TD-R70D\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 980.0,\n   \"vendor_booking_id\": \"DLR70D\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R70X\": {\n   \"created_at\": \"2026-09-05T10:02:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R70\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R70X\",\n   \"platform_booking_id\": \"TD-R70X\",\n   \"product_type\": \"hotel\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 410.0,\n   \"vendor_booking_id\": \"RNR70X\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  }\n },\n \"refunds\": {\n  \"RF-R70X\": {\n   \"amount\": 358.75,\n   \"created_at\": \"2026-10-27T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"destination\": \"original_payment\",\n   \"payment_id\": \"PM-R70X\",\n   \"platform_booking_id\": \"TD-R70X\",\n   \"reason_code\": \"customer_cancel\",\n   \"refund_id\": \"RF-R70X\",\n   \"source\": \"agent\",\n   \"state\": \"paid\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-AMALFI-PROP|AMF-R70C\": {\n   \"data\": {\n    \"check_in\": \"2026-11-02\",\n    \"check_out\": \"2026-11-06\",\n    \"city\": \"Nice\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-26T15:00:00+01:00\",\n     \"currency\": \"EUR\",\n     \"late_cancel_fee_amount\": 345.0,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R70C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"AMF-R70C\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  },\n  \"V-DELTA|DLR70D\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-11-07T15:10:00-05:00\",\n      \"dep\": \"2026-11-07T10:40:00+01:00\",\n      \"flight\": \"DL241\",\n      \"from\": \"NCE\",\n      \"to\": \"JFK\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R70D\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLR70D\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-FR|FRR70A\": {\n   \"data\": {\n    \"distance_km\": 280,\n    \"extraordinary\": false,\n    \"fare_class\": \"Regular\",\n    \"intra_eu\": true,\n    \"pax\": 1,\n    \"region\": \"EU\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-27T10:00:00+00:00\",\n      \"dep\": \"2026-10-27T09:00:00+00:00\",\n      \"flight\": \"FR1702\",\n      \"from\": \"OPO\",\n      \"to\": \"FAO\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R70A\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"FRR70A\",\n   \"vendor_id\": \"V-FR\"\n  },\n  \"V-HTL-RIVERNORTH|RNR70X\": {\n   \"data\": {\n    \"check_in\": \"2026-10-25\",\n    \"check_out\": \"2026-11-02\",\n    \"city\": \"Porto\",\n    \"nightly_rate\": 51.25,\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-18T15:00:00+01:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 51.25,\n     \"rule_id\": \"SC-RIVERNORTH\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R70X\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"RNR70X\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  },\n  \"V-LH|LHR70B\": {\n   \"data\": {\n    \"distance_km\": 1630,\n    \"extraordinary\": false,\n    \"fare_class\": \"Light\",\n    \"intra_eu\": true,\n    \"pax\": 1,\n    \"region\": \"EU\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-11-02T13:40:00+01:00\",\n      \"dep\": \"2026-11-02T10:30:00+00:00\",\n      \"flight\": \"LH4417\",\n      \"from\": \"LIS\",\n      \"to\": \"NCE\"\n     }\n    ],\n    \"taxes\": 34.0\n   },\n   \"platform_booking_id\": \"TD-R70B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"LHR70B\",\n   \"vendor_id\": \"V-LH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "ef509b9a55b1b821a0bbe2c14ba25cdd\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/70_assault_hospital_cancel_rest_claim\"\ndescription = \"Ryanair flight read (missed, nothing to refund) -> Lufthansa Light flight cancelled as asked, fee authorized (only the taxes come back as cash) -> quote and refund the taxes -> Nice hotel cancelled, late fee authorized -> quote and refund the rest -> Delta flight home moved to the earlier flight within the authorized amount -> Allianz sickness claims for what nobody refunds: the Ryanair fare, the Lufthansa fare less its taxes, the hotel fee.\"\nkeywords = [\"EU261\", \"US DOT\"]\n\n[metadata]\nwalk = \"70_assault_hospital_cancel_rest_claim__right\"\nchain = \"Ryanair flight read (missed, nothing to refund) -> Lufthansa Light flight cancelled as asked, fee authorized (only the taxes come back as cash) -> quote and refund the taxes -> Nice hotel cancelled, late fee authorized -> quote and refund the rest -> Delta flight home moved to the earlier flight within the authorized amount -> Allianz sickness claims for what nobody refunds: the Ryanair fare, the Lufthansa fare less its taxes, the hotel fee.\"\npersona = \"solo\"\nregimes = [\"EU261\", \"US DOT\"]\nvendors = [\"V-ALLIANZ\", \"V-AMALFI-PROP\", \"V-DELTA\", \"V-FR\", \"V-LH\"]\nvendors_written = [\"V-LH\", \"V-AMALFI-PROP\", \"V-DELTA\", \"V-ALLIANZ\"]\ntrap_families = [\"conditional\", \"history\", \"liability\", \"restraint\", \"time\"]\ntraps = [\"ask_instead_of_cancel\", \"claim_before_hotel_refund\", \"claim_full_stay\", \"refund_flown_ryanair\", \"refund_porto_fee\"]\ncode_guards_on_route = [\"CV-CANCEL-MONEY\", \"CV-REASON\", \"CV-SEATS\", \"GP-LH-LIGHT\", \"INS-REASON\", \"INS-REFUNDS-FIRST\", \"IP-1\", \"IP-15\", \"IP-1b\", \"P-DELTA\", \"P-DELTA-BASIC\", \"P-DOT-AGENT\", \"P-HILTON\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-FLIGHT-PORT\", \"CR-ITIN\", \"CR-MSC-NAME\", \"CV-CANCEL-STATUS\", \"CV-LOST-ITEM\", \"GP-RAIL-EXCHANGE\", \"INS-DELAY\", \"INS-INSURER\", \"INS-UNCOVERED\", \"IP-11\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-HOTEL-LAW\", \"P-LIAB-3\", \"TP-NOT-TRIPDESK\", \"WC-U2-CANCEL\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\"]\ncomplaint = \"https://www.reddit.com/r/travel/comments/1qf3y8q/travel_insurance_or_refunds_from/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "AMF-R70C"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "AMF-R70C",
+     "card_last4": "6114",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "elena.brooks@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "FRR70A",
+     "vendor_id": "V-FR"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "record_locator": "LHR70B",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "record_locator": "LHR70B",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_cancel"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$3.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$5.refundable",
+     "currency": "EUR",
+     "destination": "original_payment",
+     "platform_booking_id": "$3.platform_booking_id",
+     "reason_code": "customer_cancel"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "confirmation": "AMF-R70C",
+     "vendor_id": "V-AMALFI-PROP"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "confirmation": "AMF-R70C",
+     "vendor_id": "V-AMALFI-PROP"
+    },
+    "name": "hotel_cancel"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$7.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$9.refundable",
+     "currency": "EUR",
+     "destination": "original_payment",
+     "platform_booking_id": "$7.platform_booking_id",
+     "reason_code": "customer_cancel"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "max_fare_difference": 200.0,
+     "new_flight": "DL243",
+     "record_locator": "DLR70D",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_change"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$7.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "policy_id": "$13.details.insurance_policy_id"
+    },
+    "name": "insurance_get_policy"
+   },
+   {
+    "args": {
+     "amount": "$12.vendor_penalty",
+     "currency": "EUR",
+     "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "policy_id": "$14.policy_id",
+     "reason": "sickness_or_injury"
+    },
+    "name": "insurance_file_claim"
+   },
+   {
+    "args": {
+     "amount": "$5.vendor_penalty",
+     "currency": "EUR",
+     "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+     "platform_booking_id": "$3.platform_booking_id",
+     "policy_id": "$14.policy_id",
+     "reason": "sickness_or_injury"
+    },
+    "name": "insurance_file_claim"
+   },
+   {
+    "args": {
+     "amount": "$9.vendor_penalty",
+     "currency": "EUR",
+     "evidence": "Insured injured in an assault on 25 Oct, hospital discharge DOC-R70A advises return home.",
+     "platform_booking_id": "$7.platform_booking_id",
+     "policy_id": "$14.policy_id",
+     "reason": "sickness_or_injury"
+    },
+    "name": "insurance_file_claim"
+   },
+   {
+    "args": {
+     "text": "I am so sorry for what happened. Lufthansa cancelled LHR70B and kept 84 EUR of the Light fare; the 34 EUR of taxes are refunded to your card. The Nice hotel is cancelled with its 345 EUR late fee and the other 345 EUR is refunded to your card. Your Delta flight home is now DL243 from Lisbon on 31 October for 150 USD more. The missed Ryanair flight FRR70A is not refunded, because a missed flight has nothing left to refund. Allianz approved sickness claims for the 74 EUR Ryanair fare, the 84 EUR Lufthansa kept and the 345 EUR hotel fee."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

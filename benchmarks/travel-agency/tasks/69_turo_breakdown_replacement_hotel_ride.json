@@ -1,0 +1,583 @@
+{
+ "alts": {
+  "hertz_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "TU-R69A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "TU-R69A",
+      "card_last4": "7311",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "marcus.bell@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R69B",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "max_extra": 70.0,
+      "reservation_id": "HZ-R69B",
+      "return_time": "2026-11-01T18:00:00-07:00",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_change"
+    },
+    {
+     "args": {
+      "confirmation": "RNR69C",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "RNR69C",
+      "text": "Guests arrive late tonight in a replacement car. Please hold the room.",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_add_note"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "PHX airport",
+      "pickup": "$4.data.address",
+      "pickup_time": "2026-11-01T05:00:00-07:00",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "reservation_id": "TU-R69A",
+      "vendor_id": "V-TURO"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "amount": 150.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$8.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "Turo host desk promised USD 150 toward the replacement car after the TU-R69A breakdown."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "Thank you for the full story, and I am sorry about the breakdown. The USD 150 the Turo host desk offered toward your replacement car has been escalated to supplier relations, with a 72 hour response window. TripDesk does not pay that amount itself. We also cannot refund the 3 unused days on Turo booking TU-R69A: Turo is the merchant of record and refunds its own trips, so that request goes through Turo. Your Hertz rental HZ-R69B is now due back at PHX at 18:00 on 1 November, for USD 62 more, within the USD 70 you approved. I added a late-arrival note on the Sedona lodge reservation RNR69C for tonight, and the Uber from the lodge to PHX is booked for 05:00 on 1 November."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "turo_asked.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "TU-R69A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "TU-R69A",
+      "card_last4": "7311",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "marcus.bell@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "reservation_id": "TU-R69A",
+      "vendor_id": "V-TURO"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "amount": 150.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$3.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "Turo host desk promised USD 150 toward the replacement car after the TU-R69A breakdown."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "amount": 150.0,
+      "currency": "USD",
+      "message": "Host car broke down and was towed 28 Oct; the host offered the guest USD 150 toward the replacement car. Please confirm.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "info_request",
+      "vendor_id": "V-TURO"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R69B",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "max_extra": 70.0,
+      "reservation_id": "HZ-R69B",
+      "return_time": "2026-11-01T18:00:00-07:00",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_change"
+    },
+    {
+     "args": {
+      "confirmation": "RNR69C",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "RNR69C",
+      "text": "Guests arrive late tonight in a replacement car. Please hold the room.",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_add_note"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "PHX airport",
+      "pickup": "$8.data.address",
+      "pickup_time": "2026-11-01T05:00:00-07:00",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "text": "Thank you for the full story, and I am sorry about the breakdown. The USD 150 the Turo host desk offered toward your replacement car has been escalated to supplier relations, with a 72 hour response window. TripDesk does not pay that amount itself. We also cannot refund the 3 unused days on Turo booking TU-R69A: Turo is the merchant of record and refunds its own trips, so that request goes through Turo. Your Hertz rental HZ-R69B is now due back at PHX at 18:00 on 1 November, for USD 62 more, within the USD 70 you approved. I added a late-arrival note on the Sedona lodge reservation RNR69C for tonight, and the Uber from the lodge to PHX is booked for 05:00 on 1 November. I also sent Turo a request for information about the promised amount."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "charges": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 62.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R69",
+      "platform_booking_id": "TD-R69B",
+      "reason": "car_change"
+     }
+    }
+   ],
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 150.0,
+      "commitment_id": null,
+      "currency": "USD",
+      "customer_id": "C-R69",
+      "owner": "Supplier relations",
+      "platform_booking_id": "TD-R69A",
+      "queue": "supplier_relations",
+      "sla_hours": 72
+     }
+    }
+   ],
+   "platform_bookings": [
+    {
+     "op": "add",
+     "row": {
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R69",
+      "details": {},
+      "payment_id": "PM-R69D",
+      "product_type": "ride",
+      "status": "scheduled",
+      "ticket_group": null,
+      "total": 41.0,
+      "vendor_id": "V-UBER"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R69"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "address": "River North Lodge, 410 Oak Creek Dr, Sedona",
+       "check_in": "2026-10-29",
+       "check_out": "2026-11-01",
+       "city": "Sedona",
+       "nightly_rate": 126.67,
+       "notes": true,
+       "property_policy": {
+        "cancel_free_until": "2026-10-22T15:00:00-07:00",
+        "currency": "USD",
+        "late_cancel_fee_amount": 126.67,
+        "rule_id": "SC-RIVERNORTH"
+       }
+      }
+     },
+     "key": "V-HTL-RIVERNORTH|RNR69C",
+     "op": "change",
+     "presence_only": true
+    },
+    {
+     "cols": {
+      "data": {
+       "car_class": "Midsize SUV",
+       "currency": "USD",
+       "daily_rate": 62.0,
+       "deposit_hold": 250.0,
+       "history": [
+        {
+         "at": "2026-10-29T12:00:00-04:00",
+         "cost": 62.0,
+         "pickup_time": "2026-10-28T18:00:00-07:00",
+         "return_time": "2026-10-31T18:00:00-07:00"
+        }
+       ],
+       "pickup_location": "Phoenix downtown",
+       "pickup_time": "2026-10-28T18:00:00-07:00",
+       "rate_plan": "pay_now",
+       "return_location": "PHX airport",
+       "return_time": "2026-11-01T18:00:00-07:00",
+       "state": "AZ"
+      }
+     },
+     "key": "V-HERTZ|HZ-R69B",
+     "op": "change"
+    },
+    {
+     "op": "add",
+     "row": {
+      "data": {
+       "driver_matched": false,
+       "dropoff": "PHX airport",
+       "est_price": 41.0,
+       "pickup": "River North Lodge, 410 Oak Creek Dr, Sedona",
+       "pickup_time": "2026-11-01T05:00:00-07:00"
+      },
+      "status": "scheduled",
+      "vendor_id": "V-UBER"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-HILTON-HOLD] Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note? (met = 1: Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note?)",
+    "scope": [
+     "hotel_add_note"
+    ],
+    "tag": "P-HILTON-HOLD"
+   },
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-12b] Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise? (met = 1: Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise?)",
+    "scope": [
+     "ride_schedule"
+    ],
+    "tag": "IP-12b"
+   },
+   {
+    "checkpoint": "- [judge.CR-CAR-FLIGHT] Does the agent follow this policy line: [MUST CR-CAR-FLIGHT] [synthetic] When the flight named on a car reservation will arrive after the reservation's pickup_time, the agent reads the projected_arrival with flight_get_status and moves the pickup with car_change to 60 minutes after that projected arrival, leaving the return_time as booked? (met = 1: Does the agent follow this policy line: [MUST CR-CAR-FLIGHT] [synthetic] When the flight named on a car reservation will arrive after the reservation's pickup_time, the agent reads the projected_arrival with flight_get_status and moves the pickup with car_change to 60 minutes after that projected arrival, leaving the return_time as booked?)",
+    "scope": [
+     "car_change"
+    ],
+    "tag": "CR-CAR-FLIGHT"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the USD 150 the Turo host desk offered toward the replacement car was escalated to supplier relations (72 hours), and TripDesk does not pay it. (met = 1: In its replies to the customer, does the agent do this: Says the USD 150 the Turo host desk offered toward the replacement car was escalated to supplier relations (72 hours), and TripDesk does not pay it.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says TripDesk does not refund the 3 unused Turo days on TU-R69A. (met = 1: In its replies to the customer, does the agent do this: Says TripDesk does not refund the 3 unused Turo days on TU-R69A.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says the reason is that Turo is merchant of record and refunds its own trips. (met = 1: In its replies to the customer, does the agent do this: Says the reason is that Turo is merchant of record and refunds its own trips.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says the Hertz HZ-R69B return is moved to 18:00 on 1 November for USD 62 more, and the Uber from the Sedona lodge to PHX is booked for 05:00 on 1 November. (met = 1: In its replies to the customer, does the agent do this: Says the Hertz HZ-R69B return is moved to 18:00 on 1 November for USD 62 more, and the Uber from the Sedona lodge to PHX is booked for 05:00 on 1 November.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: Says the Sedona lodge was told of the late arrival tonight on reservation RNR69C. (met = 1: In its replies to the customer, does the agent do this: Says the Sedona lodge was told of the late arrival tonight on reservation RNR69C.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   }
+  ],
+  "message": "Our Turo Highlander TU-R69A died in downtown Phoenix yesterday and was towed. Turo's host offered 150 dollars or a ride voucher, nothing since. We rented a Hertz in Phoenix (HZ-R69B) and slept at the Lakeside there. Please get Turo to pay what they promised and refund the 3 days we can't use. Keep the Hertz one more day, until 6 PM on 1 November, up to 70 dollars more is fine; we drop it at PHX for our evening flight. Tell the Sedona lodge (RNR69C) we arrive late tonight. My parents fly out that morning: book an Uber from the lodge to PHX for 5 AM on the 1st. marcus.bell@example.com, card 7311.",
+  "strict_tables": [],
+  "task": "69_turo_breakdown_replacement_hotel_ride",
+  "token": "ae3119a50e7fc38b429e2812efcba545"
+ },
+ "instruction": "Our Turo Highlander TU-R69A died in downtown Phoenix yesterday and was towed. Turo's host offered 150 dollars or a ride voucher, nothing since. We rented a Hertz in Phoenix (HZ-R69B) and slept at the Lakeside there. Please get Turo to pay what they promised and refund the 3 days we can't use. Keep the Hertz one more day, until 6 PM on 1 November, up to 70 dollars more is fine; we drop it at PHX for our evening flight. Tell the Sedona lodge (RNR69C) we arrive late tonight. My parents fly out that morning: book an Uber from the lodge to PHX for 5 AM on the 1st. marcus.bell@example.com, card 7311.\n",
+ "overlay": "{\n \"contact_history\": {\n  \"CT-R69A\": {\n   \"actor\": \"Turo host desk\",\n   \"channel\": \"phone\",\n   \"contact_id\": \"CT-R69A\",\n   \"customer_id\": \"C-R69\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R69A\",\n   \"text\": \"Host via Turo support: sorry for the breakdown; we will pay USD 150 toward the replacement car or an equal ride voucher, through Turo.\",\n   \"ts\": \"2026-10-28T20:10:00-07:00\"\n  }\n },\n \"customers\": {\n  \"C-R69\": {\n   \"customer_id\": \"C-R69\",\n   \"email\": \"marcus.bell@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Marcus Bell\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R69A\": {\n   \"amount\": 520.0,\n   \"card_last4\": \"7311\",\n   \"created_at\": \"2026-09-01T10:00:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"vendor\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R69A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R69B\": {\n   \"amount\": 186.0,\n   \"card_last4\": \"7311\",\n   \"created_at\": \"2026-10-28T17:30:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R69B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R69C\": {\n   \"amount\": 380.0,\n   \"card_last4\": \"7311\",\n   \"created_at\": \"2026-09-01T10:10:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R69C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R69D\": {\n   \"amount\": 159.0,\n   \"card_last4\": \"7311\",\n   \"created_at\": \"2026-10-28T19:00:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R69D\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R69A\": {\n   \"created_at\": \"2026-09-01T10:00:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R69A\",\n   \"platform_booking_id\": \"TD-R69A\",\n   \"product_type\": \"car\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 520.0,\n   \"vendor_booking_id\": \"TU-R69A\",\n   \"vendor_id\": \"V-TURO\"\n  },\n  \"TD-R69B\": {\n   \"created_at\": \"2026-10-28T17:30:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R69B\",\n   \"platform_booking_id\": \"TD-R69B\",\n   \"product_type\": \"car\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 186.0,\n   \"vendor_booking_id\": \"HZ-R69B\",\n   \"vendor_id\": \"V-HERTZ\"\n  },\n  \"TD-R69C\": {\n   \"created_at\": \"2026-09-01T10:10:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R69C\",\n   \"platform_booking_id\": \"TD-R69C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 380.0,\n   \"vendor_booking_id\": \"RNR69C\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  },\n  \"TD-R69D\": {\n   \"created_at\": \"2026-10-28T19:00:00-07:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R69\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R69D\",\n   \"platform_booking_id\": \"TD-R69D\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 159.0,\n   \"vendor_booking_id\": \"LKR69D\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-HERTZ|HZ-R69B\": {\n   \"data\": {\n    \"car_class\": \"Midsize SUV\",\n    \"currency\": \"USD\",\n    \"daily_rate\": 62.0,\n    \"deposit_hold\": 250.0,\n    \"pickup_location\": \"Phoenix downtown\",\n    \"pickup_time\": \"2026-10-28T18:00:00-07:00\",\n    \"rate_plan\": \"pay_now\",\n    \"return_location\": \"PHX airport\",\n    \"return_time\": \"2026-10-31T18:00:00-07:00\",\n    \"state\": \"AZ\"\n   },\n   \"platform_booking_id\": \"TD-R69B\",\n   \"status\": \"picked_up\",\n   \"vendor_booking_id\": \"HZ-R69B\",\n   \"vendor_id\": \"V-HERTZ\"\n  },\n  \"V-HTL-LAKESIDE|LKR69D\": {\n   \"data\": {\n    \"check_in\": \"2026-10-28\",\n    \"check_out\": \"2026-10-29\",\n    \"city\": \"Phoenix\"\n   },\n   \"platform_booking_id\": \"TD-R69D\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LKR69D\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-HTL-RIVERNORTH|RNR69C\": {\n   \"data\": {\n    \"address\": \"River North Lodge, 410 Oak Creek Dr, Sedona\",\n    \"check_in\": \"2026-10-29\",\n    \"check_out\": \"2026-11-01\",\n    \"city\": \"Sedona\",\n    \"nightly_rate\": 126.67,\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-22T15:00:00-07:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 126.67,\n     \"rule_id\": \"SC-RIVERNORTH\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R69C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"RNR69C\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  },\n  \"V-TURO|TU-R69A\": {\n   \"data\": {\n    \"breakdown\": {\n     \"at\": \"2026-10-28T15:20:00-07:00\",\n     \"towed\": true,\n     \"where\": \"downtown Phoenix\"\n    },\n    \"car_class\": \"Toyota Highlander 2022\",\n    \"currency\": \"USD\",\n    \"daily_rate\": 104.0,\n    \"deposit_hold\": 0.0,\n    \"pickup_location\": \"PHX, host address\",\n    \"pickup_time\": \"2026-10-27T10:00:00-07:00\",\n    \"rate_plan\": \"refundable\",\n    \"return_location\": \"PHX, host address\",\n    \"return_time\": \"2026-11-01T10:00:00-07:00\",\n    \"state\": \"AZ\"\n   },\n   \"platform_booking_id\": \"TD-R69A\",\n   \"status\": \"picked_up\",\n   \"vendor_booking_id\": \"TU-R69A\",\n   \"vendor_id\": \"V-TURO\"\n  }\n }\n}\n",
+ "places": {
+  "PL-4C0ACC27": {
+   "aliases": [
+    "river north lodge 410 oak creek dr sedona"
+   ],
+   "text": "River North Lodge, 410 Oak Creek Dr, Sedona"
+  },
+  "PL-7BC48B5B": {
+   "aliases": [
+    "phx airport"
+   ],
+   "text": "PHX airport"
+  }
+ },
+ "secret": "ae3119a50e7fc38b429e2812efcba545\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/69_turo_breakdown_replacement_hotel_ride\"\ndescription = \"Contact history (the Turo host desk offered 150 or a ride voucher) -> host promise escalated to supplier relations for 150 on the Turo booking -> the 3 unused Turo days not refunded (Turo is merchant of record) -> Hertz replacement read -> extended one day to 18:00 on 1 November for 62 (within the 70 authorized) -> Sedona lodge read and told of the late arrival (asked) -> Uber booked from the lodge address to PHX for 05:00 on 1 November.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"69_turo_breakdown_replacement_hotel_ride__right\"\nchain = \"Contact history (the Turo host desk offered 150 or a ride voucher) -> host promise escalated to supplier relations for 150 on the Turo booking -> the 3 unused Turo days not refunded (Turo is merchant of record) -> Hertz replacement read -> extended one day to 18:00 on 1 November for 62 (within the 70 authorized) -> Sedona lodge read and told of the late arrival (asked) -> Uber booked from the lodge address to PHX for 05:00 on 1 November.\"\npersona = \"family\"\nregimes = [\"US DOT\"]\nvendors = [\"V-HERTZ\", \"V-HTL-LAKESIDE\", \"V-HTL-RIVERNORTH\", \"V-TURO\", \"V-UBER\"]\nvendors_written = [\"V-TURO\", \"V-HERTZ\", \"V-HTL-RIVERNORTH\", \"V-UBER\"]\ntrap_families = [\"amount\", \"conditional\", \"history\", \"liability\"]\ntraps = [\"escalate_turo_refund\", \"extend_two_days\", \"pay_host_promise_ourselves\", \"promise_to_goodwill\"]\ncode_guards_on_route = [\"CR-CAR-EXTEND\", \"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9c\", \"IP-9e\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-CAR-FLIGHT\", \"CR-FCC\", \"CR-MSC-NAME\", \"IP-12b\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"P-HILTON-HOLD\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\"]\ncomplaint = \"https://www.reddit.com/r/turo/comments/1xfe0xq/turo_is_the_worst_do_not_use/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "TU-R69A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "TU-R69A",
+     "card_last4": "7311",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "marcus.bell@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_contact_history"
+   },
+   {
+    "args": {
+     "reservation_id": "TU-R69A",
+     "vendor_id": "V-TURO"
+    },
+    "name": "car_get_reservation"
+   },
+   {
+    "args": {
+     "amount": 150.0,
+     "currency": "USD",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "$3.platform_booking_id",
+     "queue": "supplier_relations",
+     "summary": "Turo host desk promised USD 150 toward the replacement car after the TU-R69A breakdown."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "reservation_id": "HZ-R69B",
+     "vendor_id": "V-HERTZ"
+    },
+    "name": "car_get_reservation"
+   },
+   {
+    "args": {
+     "max_extra": 70.0,
+     "reservation_id": "HZ-R69B",
+     "return_time": "2026-11-01T18:00:00-07:00",
+     "vendor_id": "V-HERTZ"
+    },
+    "name": "car_change"
+   },
+   {
+    "args": {
+     "confirmation": "RNR69C",
+     "vendor_id": "V-HTL-RIVERNORTH"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "confirmation": "RNR69C",
+     "text": "Guests arrive late tonight in a replacement car. Please hold the room.",
+     "vendor_id": "V-HTL-RIVERNORTH"
+    },
+    "name": "hotel_add_note"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id",
+     "dropoff": "PHX airport",
+     "pickup": "$7.data.address",
+     "pickup_time": "2026-11-01T05:00:00-07:00",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_schedule"
+   },
+   {
+    "args": {
+     "text": "Thank you for the full story, and I am sorry about the breakdown. The USD 150 the Turo host desk offered toward your replacement car has been escalated to supplier relations, with a 72 hour response window. TripDesk does not pay that amount itself. We also cannot refund the 3 unused days on Turo booking TU-R69A: Turo is the merchant of record and refunds its own trips, so that request goes through Turo. Your Hertz rental HZ-R69B is now due back at PHX at 18:00 on 1 November, for USD 62 more, within the USD 70 you approved. I added a late-arrival note on the Sedona lodge reservation RNR69C for tonight, and the Uber from the lodge to PHX is booked for 05:00 on 1 November."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

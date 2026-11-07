@@ -1,0 +1,278 @@
+{
+ "alts": {
+  "carrier_info_request.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "KUF10A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "KUF10A",
+      "card_last4": "6710",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "minji.park@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "KUF10A",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "reservation_number": "DBF10B",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "KU4101 on 2026-10-20 arrived late and broke the KU4103 connection; arrival in Rome 290 minutes late. Please confirm the delay record and any carrier compensation scheme.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "info_request",
+      "vendor_id": "V-KU"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$6.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "text": "EU261 does not give you compensation on KUF10A: it is not an EU carrier and the journey started in Seoul, and our check finds no regulation that applies (amount 0). What counts is your arrival in Rome, 290 minutes late, not the 49 minutes of the first flight, but with no regime there is no claim to file through us. The missed train to Florence (DBF10B) was a Super Sparpreis ticket, which is never refunded: 0.00 EUR comes back, and as the train itself ran on time no rail delay compensation is owed either."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "rail_entitlement_read.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "KUF10A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "KUF10A",
+      "card_last4": "6710",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "minji.park@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "KUF10A",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "reservation_number": "DBF10B",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "reservation_number": "DBF10C",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "text": "EU261 does not give you compensation on KUF10A: it is not an EU carrier and the journey started in Seoul, and our check finds no regulation that applies (amount 0). What counts is your arrival in Rome, 290 minutes late, not the 49 minutes of the first flight, but with no regime there is no claim to file through us. The missed train to Florence (DBF10B) was a Super Sparpreis ticket, which is never refunded: 0.00 EUR comes back, and as the train itself ran on time no rail delay compensation is owed either."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R50"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says no EU261 compensation is owed on KUF10A. (met = 1: In its replies to the customer, does the agent do this: Says no EU261 compensation is owed on KUF10A.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says no regulation applies to this booking (compute_entitlement gives regime none, amount 0). (met = 1: In its replies to the customer, does the agent do this: Says no regulation applies to this booking (compute_entitlement gives regime none, amount 0).)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says there is no compensation claim to file through TripDesk for the flight delay. (met = 1: In its replies to the customer, does the agent do this: Says there is no compensation claim to file through TripDesk for the flight delay.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says the missed DBF10B Super Sparpreis train is not refunded: 0.00 EUR refundable. (met = 1: In its replies to the customer, does the agent do this: Says the missed DBF10B Super Sparpreis train is not refunded: 0.00 EUR refundable.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "Seoul to Rome via Istanbul (KUF10A) on a Turkish airline, not an EU one. The first flight arrived 49 minutes late by the airline's own app, I missed the 17:10 to Rome and landed at 23:30, almost 5 hours late. I lost my train to Florence (DBF10B) and had to sort out something else: can I get that ticket refunded? Which regulation applies, EU261? How do I claim? minji.park@example.com, card 6710.",
+  "strict_tables": [],
+  "task": "50_non_eu_carrier_miss_train_lost",
+  "token": "adb787830ad82c9aa5d443adef405f1c"
+ },
+ "instruction": "Seoul to Rome via Istanbul (KUF10A) on a Turkish airline, not an EU one. The first flight arrived 49 minutes late by the airline's own app, I missed the 17:10 to Rome and landed at 23:30, almost 5 hours late. I lost my train to Florence (DBF10B) and had to sort out something else: can I get that ticket refunded? Which regulation applies, EU261? How do I claim? minji.park@example.com, card 6710.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R50\": {\n   \"customer_id\": \"C-R50\",\n   \"email\": \"minji.park@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Minji Park\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R50A\": {\n   \"amount\": 940.0,\n   \"card_last4\": \"6710\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R50\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R50A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R50B\": {\n   \"amount\": 29.9,\n   \"card_last4\": \"6710\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R50\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R50B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R50C\": {\n   \"amount\": 24.9,\n   \"card_last4\": \"6710\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R50\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R50C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R50A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R50\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"TR\"\n   },\n   \"payment_id\": \"PM-R50A\",\n   \"platform_booking_id\": \"TD-R50A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 940.0,\n   \"vendor_booking_id\": \"KUF10A\",\n   \"vendor_id\": \"V-KU\"\n  },\n  \"TD-R50B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R50\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R50B\",\n   \"platform_booking_id\": \"TD-R50B\",\n   \"product_type\": \"rail\",\n   \"status\": \"no_show\",\n   \"ticket_group\": null,\n   \"total\": 29.9,\n   \"vendor_booking_id\": \"DBF10B\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"TD-R50C\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R50\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R50C\",\n   \"platform_booking_id\": \"TD-R50C\",\n   \"product_type\": \"rail\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 24.9,\n   \"vendor_booking_id\": \"DBF10C\",\n   \"vendor_id\": \"V-DB\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DB|DBF10B\": {\n   \"data\": {\n    \"date\": \"2026-10-20\",\n    \"dep\": \"2026-10-20T19:45:00+02:00\",\n    \"fare_class\": \"Super Sparpreis\",\n    \"from\": \"ROMA\",\n    \"region\": \"EU\",\n    \"to\": \"FIRENZE\",\n    \"train\": \"FR 9547\"\n   },\n   \"platform_booking_id\": \"TD-R50B\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"DBF10B\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-DB|DBF10C\": {\n   \"data\": {\n    \"date\": \"2026-10-27\",\n    \"dep\": \"2026-10-27T10:15:00+01:00\",\n    \"fare_class\": \"Sparpreis\",\n    \"from\": \"FIRENZE\",\n    \"region\": \"EU\",\n    \"to\": \"ROMA\",\n    \"train\": \"FR 9612\"\n   },\n   \"platform_booking_id\": \"TD-R50C\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DBF10C\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-KU|KUF10A\": {\n   \"data\": {\n    \"arrival_delay_min\": 290,\n    \"fare_class\": \"Saver\",\n    \"pax\": 1,\n    \"rebooked_to\": \"KU4105\",\n    \"region\": \"TR\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-20T16:10:00+03:00\",\n      \"dep\": \"2026-10-20T10:30:00+09:00\",\n      \"flight\": \"KU4101\",\n      \"from\": \"ICN\",\n      \"to\": \"IST\"\n     },\n     {\n      \"arr\": \"2026-10-20T18:40:00+02:00\",\n      \"dep\": \"2026-10-20T17:10:00+03:00\",\n      \"flight\": \"KU4103\",\n      \"from\": \"IST\",\n      \"to\": \"FCO\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R50A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"KUF10A\",\n   \"vendor_id\": \"V-KU\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "adb787830ad82c9aa5d443adef405f1c\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/50_non_eu_carrier_miss_train_lost\"\ndescription = \"Carrier booking -> compute_entitlement (no regime for a non-EU carrier from Seoul) -> rail booking and quote (no-show, nothing refundable) -> reply: which rule applies and that nothing is claimable.\"\nkeywords = [\"none (non-EU carrier)\", \"EU rail\"]\n\n[metadata]\nwalk = \"50_non_eu_carrier_miss_train_lost__right\"\nchain = \"Carrier booking -> compute_entitlement (no regime for a non-EU carrier from Seoul) -> rail booking and quote (no-show, nothing refundable) -> reply: which rule applies and that nothing is claimable.\"\npersona = \"solo traveller\"\nregimes = [\"none (non-EU carrier)\", \"EU rail\"]\nvendors = [\"V-DB\", \"V-KU\"]\nvendors_written = [\"V-KU\"]\ntrap_families = [\"identity\", \"liability\", \"restraint\"]\ntraps = [\"claim_eu261_anyway\", \"rail_claim_return_train\", \"refund_lost_train\", \"refund_return_train\"]\ncode_guards_on_route = []\njudge_items_on_route = [\"CR-FCC\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/Flights/comments/1g2csn0/turkish_airlines_compensation_south_korea_to_italy/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "KUF10A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "KUF10A",
+     "card_last4": "6710",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "minji.park@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "KUF10A",
+     "vendor_id": "V-KU"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "reservation_number": "DBF10B",
+     "vendor_id": "V-DB"
+    },
+    "name": "rail_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$4.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "text": "EU261 does not give you compensation on KUF10A: it is not an EU carrier and the journey started in Seoul, and our check finds no regulation that applies (amount 0). What counts is your arrival in Rome, 290 minutes late, not the 49 minutes of the first flight, but with no regime there is no claim to file through us. The missed train to Florence (DBF10B) was a Super Sparpreis ticket, which is never refunded: 0.00 EUR comes back, and as the train itself ran on time no rail delay compensation is owed either."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

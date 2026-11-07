@@ -52,12 +52,15 @@ Runs and `report` writes `report.md`. To build an Environment from your own trac
 `kullback build`; [docs/trace-intake.md](docs/trace-intake.md) covers the trace formats, and
 [docs/README.md](docs/README.md) lists every doc.
 
-The travel Tasks run under Harbor with Docker; Harbor's oracle agent plays each reference solution at no cost:
+The travel Tasks run under Harbor with Docker; Harbor's oracle agent plays each reference solution, but with no judge
+model most of its runs stay unscored:
 
 ```bash
 hf download leibler/travel-agency --repo-type dataset --local-dir travel-agency
 harbor run -p travel-agency -a oracle -n 4
 ```
+
+The same Tasks are in [benchmarks/travel-agency](benchmarks/travel-agency/README.md) as one environment and its Task files; `python export.py --out harbor` there writes them.
 
 Grading a real agent needs a judge model for the reply checks; [the dataset card](https://huggingface.co/datasets/leibler/travel-agency)
 lists the variables and the agent commands.

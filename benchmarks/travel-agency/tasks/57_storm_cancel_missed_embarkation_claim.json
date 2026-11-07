@@ -1,0 +1,466 @@
+{
+ "alts": {
+  "cruise_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR57A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR57A",
+      "card_last4": "2276",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "helen.brooks@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "booking_number": "RCR57B",
+      "vendor_id": "V-RCL"
+     },
+     "name": "cruise_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R57B"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "record_locator": "DLR57A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R57A"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$5.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "TD-R57A",
+      "reason_code": "airline_cancelled"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "policy_id": "INS-R57"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "amount": 3120.0,
+      "currency": "USD",
+      "evidence": "Flight cancelled for weather; cruise missed; nothing refundable.",
+      "platform_booking_id": "TD-R57B",
+      "policy_id": "INS-R57",
+      "reason": "carrier_disruption_weather"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "text": "I refunded the 690 USD Delta fare for the cancelled DLR57A to your card. Royal Caribbean refunds nothing after a missed embarkation, so nothing came back on RCR57B. Trip delay was the wrong reason, so the 500 USD trip delay cap does not apply: I filed your Travel Guard claim as a carrier disruption for weather, for the full 3120 USD cruise fare, and Travel Guard approved 3120 USD to you."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "rcl_info_request.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR57A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR57A",
+      "card_last4": "2276",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "helen.brooks@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLR57A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$3.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$2.platform_booking_id",
+      "reason_code": "airline_cancelled"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "booking_number": "RCR57B",
+      "vendor_id": "V-RCL"
+     },
+     "name": "cruise_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Guests did not board RCR57B on 25 Oct: their flight was cancelled for weather. Please confirm the missed embarkation record for their insurer.",
+      "platform_booking_id": "$5.platform_booking_id",
+      "request_type": "info_request",
+      "vendor_id": "V-RCL"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$8.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "policy_id": "$6.details.insurance_policy_id"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "amount": 3120.0,
+      "currency": "USD",
+      "evidence": "DL2031 BOS-SJU cancelled 25 Oct for a winter storm; no flight reached San Juan before all aboard; cruise missed, quote_cancellation gives nothing refundable.",
+      "platform_booking_id": "$5.platform_booking_id",
+      "policy_id": "$10.policy_id",
+      "reason": "carrier_disruption_weather"
+     },
+     "name": "insurance_file_claim"
+    },
+    {
+     "args": {
+      "text": "I refunded the 690 USD Delta fare for the cancelled DLR57A to your card. Royal Caribbean refunds nothing after a missed embarkation, so nothing came back on RCR57B. Trip delay was the wrong reason, so the 500 USD trip delay cap does not apply: I filed your Travel Guard claim as a carrier disruption for weather, for the full 3120 USD cruise fare, and Travel Guard approved 3120 USD to you."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R57A, cancelled, dated 2026-07-01, already on file before this conversation",
+    "vendor_bookings V-DELTA|DLR57A, cancelled, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "insurance_claims": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 3120.0,
+      "currency": "USD",
+      "decision_text": "Approved: V-TRAVELGUARD pays 3120.00 USD to the insured.",
+      "filed_at": "2026-10-29T12:00:00-04:00",
+      "paid_amount": 3120.0,
+      "platform_booking_id": "TD-R57B",
+      "policy_id": "INS-R57",
+      "reason": "carrier_disruption_weather",
+      "status": "approved"
+     }
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 690.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R57A",
+      "platform_booking_id": "TD-R57A",
+      "reason_code": "airline_cancelled",
+      "source": "agent",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R57"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-3] Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted? (met = 1: Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "P-LIAB-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.INS-INSURER] Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy? (met = 1: Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "INS-INSURER"
+   },
+   {
+    "checkpoint": "- [judge.INS-UNCOVERED] Does the agent follow this policy line: [SHOULD INS-UNCOVERED] Before filing a reason the plan's covered_reasons do not list, the agent should tell the customer the insurer will deny it, and should file it only where the message asks for the claim anyway? (met = 1: Does the agent follow this policy line: [SHOULD INS-UNCOVERED] Before filing a reason the plan's covered_reasons do not list, the agent should tell the customer the insurer will deny it, and should file it only where the message asks for the claim anyway?)",
+    "scope": [
+     "insurance_file_claim"
+    ],
+    "tag": "INS-UNCOVERED"
+   },
+   {
+    "checkpoint": "- [judge.INS-DELAY] Does the agent follow this policy line: [MUST INS-DELAY] [V1] Trip delay pays only once the delay reaches the plan's trip_delay_min_hours, and at most the plan's trip_delay_daily_max per traveller for each started day of delay: insurance_file_claim caps a trip_delay claim at that? (met = 1: Does the agent follow this policy line: [MUST INS-DELAY] [V1] Trip delay pays only once the delay reaches the plan's trip_delay_min_hours, and at most the plan's trip_delay_daily_max per traveller for each started day of delay: insurance_file_claim caps a trip_delay claim at that?)",
+    "scope": [
+     "insurance_file_claim"
+    ],
+    "tag": "INS-DELAY"
+   },
+   {
+    "checkpoint": "- [judge.GP-RAIL-EXCHANGE] Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it? (met = 1: Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "GP-RAIL-EXCHANGE"
+   },
+   {
+    "checkpoint": "- [judge.TP-NOT-TRIPDESK] Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it? (met = 1: Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "TP-NOT-TRIPDESK"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-U2-CANCEL] Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives? (met = 1: Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives?)",
+    "scope": [
+     "flight_cancel",
+     "issue_refund"
+    ],
+    "tag": "WC-U2-CANCEL"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that 690 USD for the cancelled Delta flight was refunded to the original card. (met = 1: In its replies to the customer, does the agent do this: States that 690 USD for the cancelled Delta flight was refunded to the original card.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that Royal Caribbean refunds nothing on the missed cruise RCR57B. (met = 1: In its replies to the customer, does the agent do this: States that Royal Caribbean refunds nothing on the missed cruise RCR57B.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says the 500 USD trip delay cap does not apply to the claim. (met = 1: In its replies to the customer, does the agent do this: Says the 500 USD trip delay cap does not apply to the claim.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says the reason is that the claim is not a trip delay claim. (met = 1: In its replies to the customer, does the agent do this: Says the reason is that the claim is not a trip delay claim.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: States that Travel Guard approved 3120 USD for the cruise. (met = 1: In its replies to the customer, does the agent do this: States that Travel Guard approved 3120 USD for the cruise.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   }
+  ],
+  "message": "Our Delta flight DLR57A to San Juan on 25 October was cancelled for the winter storm and there was no other way to get there before the 8:30 PM sailing, so we missed our Royal Caribbean cruise (RCR57B). We have the Travel Guard plan from you. Somebody logged it as trip delay with a 500 dollar cap, is that right? Please get us the flight money and claim the cruise properly. If Royal Caribbean will refund part of it, take that first. helen.brooks@example.com, 2276.",
+  "strict_tables": [],
+  "task": "57_storm_cancel_missed_embarkation_claim",
+  "token": "10764312061afc9a516550867839db75"
+ },
+ "instruction": "Our Delta flight DLR57A to San Juan on 25 October was cancelled for the winter storm and there was no other way to get there before the 8:30 PM sailing, so we missed our Royal Caribbean cruise (RCR57B). We have the Travel Guard plan from you. Somebody logged it as trip delay with a 500 dollar cap, is that right? Please get us the flight money and claim the cruise properly. If Royal Caribbean will refund part of it, take that first. helen.brooks@example.com, 2276.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R57\": {\n   \"customer_id\": \"C-R57\",\n   \"email\": \"helen.brooks@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Helen Brooks\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"insurance_policies\": {\n  \"INS-R57\": {\n   \"cancelled_at\": null,\n   \"cfar\": false,\n   \"covered_booking_ids\": [\n    \"TD-R57A\",\n    \"TD-R57B\"\n   ],\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R57\",\n   \"insurer_id\": \"V-TRAVELGUARD\",\n   \"payment_id\": null,\n   \"plan\": \"Preferred\",\n   \"policy_id\": \"INS-R57\",\n   \"premium\": 196.0,\n   \"premium_refunded\": 0.0,\n   \"purchased_at\": \"2026-07-02T10:00:00-04:00\",\n   \"status\": \"active\",\n   \"trip_cost\": 3810.0,\n   \"trip_end\": \"2026-11-01T18:00:00-04:00\",\n   \"trip_start\": \"2026-10-25T08:15:00-04:00\"\n  }\n },\n \"payments\": {\n  \"PM-R57A\": {\n   \"amount\": 690.0,\n   \"card_last4\": \"2276\",\n   \"created_at\": \"2026-07-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R57\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R57A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R57B\": {\n   \"amount\": 3120.0,\n   \"card_last4\": \"2276\",\n   \"created_at\": \"2026-07-01T10:05:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R57\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R57B\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R57A\": {\n   \"created_at\": \"2026-07-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R57\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-25T05:30:00-04:00\",\n     \"by\": \"airline\",\n     \"cause\": \"weather\"\n    },\n    \"insurance_policy_id\": \"INS-R57\",\n    \"pax\": 2,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R57A\",\n   \"platform_booking_id\": \"TD-R57A\",\n   \"product_type\": \"flight\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 690.0,\n   \"vendor_booking_id\": \"DLR57A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R57B\": {\n   \"created_at\": \"2026-07-01T10:05:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R57\",\n   \"details\": {\n    \"guests\": 2,\n    \"insurance_policy_id\": \"INS-R57\",\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R57B\",\n   \"platform_booking_id\": \"TD-R57B\",\n   \"product_type\": \"cruise\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 3120.0,\n   \"vendor_booking_id\": \"RCR57B\",\n   \"vendor_id\": \"V-RCL\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR57A\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 2,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-25T13:40:00-04:00\",\n      \"dep\": \"2026-10-25T08:15:00-04:00\",\n      \"flight\": \"DL2031\",\n      \"from\": \"BOS\",\n      \"to\": \"SJU\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R57A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"DLR57A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-RCL|RCR57B\": {\n   \"data\": {\n    \"air_by_line\": false,\n    \"all_aboard\": \"2026-10-25T19:30:00-04:00\",\n    \"boarded\": false,\n    \"debark_port\": \"San Juan\",\n    \"depart\": \"2026-10-25T20:30:00-04:00\",\n    \"deposit\": 600.0,\n    \"disembark\": \"2026-11-01T07:00:00-04:00\",\n    \"embark_port\": \"San Juan\",\n    \"nights\": 7,\n    \"onboard_credit\": 0.0,\n    \"paid_in_full\": true,\n    \"region\": \"US\",\n    \"sail_date\": \"2026-10-25\",\n    \"ship\": \"Grandeur of the Seas\",\n    \"taxes_fees\": 420.0\n   },\n   \"platform_booking_id\": \"TD-R57B\",\n   \"status\": \"missed_embarkation\",\n   \"vendor_booking_id\": \"RCR57B\",\n   \"vendor_id\": \"V-RCL\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "10764312061afc9a516550867839db75\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/57_storm_cancel_missed_embarkation_claim\"\ndescription = \"Delta flight to San Juan cancelled for a winter storm -> quote and cash refund -> cruise read (missed embarkation: nothing refundable) -> Travel Guard carrier weather claim for the cruise fare less what came back.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"57_storm_cancel_missed_embarkation_claim__right\"\nchain = \"Delta flight to San Juan cancelled for a winter storm -> quote and cash refund -> cruise read (missed embarkation: nothing refundable) -> Travel Guard carrier weather claim for the cruise fare less what came back.\"\npersona = \"couple\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-RCL\", \"V-TRAVELGUARD\"]\nvendors_written = [\"V-DELTA\", \"V-RCL\", \"V-TRAVELGUARD\"]\ntrap_families = [\"conditional\", \"liability\", \"restraint\", \"time\"]\ntraps = [\"claim_as_trip_delay\", \"claim_flight_before_refund\", \"goodwill_for_cruise\", \"refund_missed_cruise\"]\ncode_guards_on_route = [\"CV-REASON\", \"INS-REASON\", \"INS-REFUNDS-FIRST\", \"IP-1\", \"IP-15\", \"IP-1b\", \"P-DOT-AGENT\", \"P-DOT-CASH\", \"P-DOT-REFUND\"]\njudge_items_on_route = [\"CR-FCC\", \"CV-LOST-ITEM\", \"GP-RAIL-EXCHANGE\", \"INS-DELAY\", \"INS-INSURER\", \"INS-UNCOVERED\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-LIAB-3\", \"TP-NOT-TRIPDESK\", \"WC-U2-CANCEL\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\"]\ncomplaint = \"https://www.reddit.com/r/Cruise/comments/1px1e0e/travel_insurance_question_flight_cancelled_due_to/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLR57A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLR57A",
+     "card_last4": "2276",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "helen.brooks@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "DLR57A",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$3.refundable",
+     "currency": "USD",
+     "destination": "original_payment",
+     "platform_booking_id": "$2.platform_booking_id",
+     "reason_code": "airline_cancelled"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "booking_number": "RCR57B",
+     "vendor_id": "V-RCL"
+    },
+    "name": "cruise_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$5.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$5.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "policy_id": "$6.details.insurance_policy_id"
+    },
+    "name": "insurance_get_policy"
+   },
+   {
+    "args": {
+     "amount": 3120.0,
+     "currency": "USD",
+     "evidence": "DL2031 BOS-SJU cancelled 25 Oct for a winter storm; no flight reached San Juan before all aboard; cruise missed, quote_cancellation gives nothing refundable.",
+     "platform_booking_id": "$5.platform_booking_id",
+     "policy_id": "$8.policy_id",
+     "reason": "carrier_disruption_weather"
+    },
+    "name": "insurance_file_claim"
+   },
+   {
+    "args": {
+     "text": "I refunded the 690 USD Delta fare for the cancelled DLR57A to your card. Royal Caribbean refunds nothing after a missed embarkation, so nothing came back on RCR57B. Trip delay was the wrong reason, so the 500 USD trip delay cap does not apply: I filed your Travel Guard claim as a carrier disruption for weather, for the full 3120 USD cruise fare, and Travel Guard approved 3120 USD to you."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

@@ -1,0 +1,378 @@
+{
+ "alts": {
+  "read_all_bookings.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLF02B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLF02B",
+      "card_last4": "6202",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "kenji.watanabe02@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "record_locator": "DLF02C",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-28",
+      "flight": "KU4202",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_status"
+    },
+    {
+     "args": {
+      "record_locator": "DLF02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "IAH",
+      "origin": "SFO",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 100.0,
+      "new_flight": "DL4602",
+      "record_locator": "DLF02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "text": "No, an arrival delay does not give a free rebooking here: the Delta flight DLF02B is on a separate ticket from the KU Airways flight. I moved Kenji to DL4602 leaving SFO at 13:05 on 29 October, the first flight he can reach after customs, for USD 60, within the USD 100 you allowed."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "search_before_status.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLF02B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLF02B",
+      "card_last4": "6202",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "kenji.watanabe02@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {},
+     "name": "get_clock"
+    },
+    {
+     "args": {
+      "record_locator": "DLF02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "IAH",
+      "origin": "SFO",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "date": "2026-10-28",
+      "flight": "KU4202",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_status"
+    },
+    {
+     "args": {
+      "max_fare_difference": 100.0,
+      "new_flight": "DL4602",
+      "record_locator": "DLF02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "text": "No, an arrival delay does not give a free rebooking here: the Delta flight DLF02B is on a separate ticket from the KU Airways flight. I moved Kenji to DL4602 leaving SFO at 13:05 on 29 October, the first flight he can reach after customs, for USD 60, within the USD 100 you allowed."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "charges": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 60.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R42",
+      "platform_booking_id": "TD-R42B",
+      "reason": "flight_change"
+     }
+    }
+   ],
+   "inventory": [
+    {
+     "cols": {
+      "seats": 3
+     },
+     "key": "V-DELTA|DL4602",
+     "op": "change"
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R42"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "fare_class": "Classic",
+       "history": [
+        {
+         "at": "2026-10-29T12:00:00-04:00",
+         "changed_from": "DL4302",
+         "cost": 60.0
+        }
+       ],
+       "pax": 1,
+       "region": "US",
+       "segments": [
+        {
+         "arr": "2026-10-29T18:55:00-05:00",
+         "dep": "2026-10-29T13:05:00-07:00",
+         "flight": "DL4602",
+         "from": "SFO",
+         "to": "IAH"
+        }
+       ]
+      }
+     },
+     "key": "V-DELTA|DLF02B",
+     "op": "change"
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-11] Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city? (met = 1: Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "IP-11"
+   },
+   {
+    "checkpoint": "- [judge.CR-FLIGHT-PORT] Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard? (met = 1: Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "CR-FLIGHT-PORT"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says Kenji does not get a free rebooking of DLF02B for the late KU4202 arrival. (met = 1: In its replies to the customer, does the agent do this: Says Kenji does not get a free rebooking of DLF02B for the late KU4202 arrival.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   }
+  ],
+  "message": "Hi, I'm writing for my husband Kenji, he's stuck in customs at SFO. His KU Airways flight (KUF02A) landed late and he will miss his Delta connection to Houston (DLF02B), which we bought separately because it was cheaper. I thought an arrival delay always gets you a free rebooking? He says customs and the bag recheck will take until about 11:30. I am not asking for any goodwill or compensation, only a flight. Please put him on the next flight he can actually make, we can pay up to $100 extra. His email is kenji.watanabe02@example.com, card ending 6202.",
+  "strict_tables": [],
+  "task": "42_separate_tickets_partner_late_classic",
+  "token": "252d755e79d1be4af0bf20abc5b92b7d"
+ },
+ "instruction": "Hi, I'm writing for my husband Kenji, he's stuck in customs at SFO. His KU Airways flight (KUF02A) landed late and he will miss his Delta connection to Houston (DLF02B), which we bought separately because it was cheaper. I thought an arrival delay always gets you a free rebooking? He says customs and the bag recheck will take until about 11:30. I am not asking for any goodwill or compensation, only a flight. Please put him on the next flight he can actually make, we can pay up to $100 extra. His email is kenji.watanabe02@example.com, card ending 6202.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R42\": {\n   \"customer_id\": \"C-R42\",\n   \"email\": \"kenji.watanabe02@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Kenji Watanabe\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"inventory\": {\n  \"V-DELTA|DL4502\": {\n   \"arr\": \"2026-10-29T16:40:00-05:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T10:50:00-07:00\",\n   \"dest\": \"IAH\",\n   \"fare_difference\": 0.0,\n   \"kind\": \"flight\",\n   \"origin\": \"SFO\",\n   \"product_id\": \"DL4502\",\n   \"seats\": 3,\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DL4602\": {\n   \"arr\": \"2026-10-29T18:55:00-05:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T13:05:00-07:00\",\n   \"dest\": \"IAH\",\n   \"fare_difference\": 60.0,\n   \"kind\": \"flight\",\n   \"origin\": \"SFO\",\n   \"product_id\": \"DL4602\",\n   \"seats\": 4,\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DL4702\": {\n   \"arr\": \"2026-10-29T22:30:00-05:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T16:40:00-07:00\",\n   \"dest\": \"IAH\",\n   \"fare_difference\": 0.0,\n   \"kind\": \"flight\",\n   \"origin\": \"SFO\",\n   \"product_id\": \"DL4702\",\n   \"seats\": 9,\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"payments\": {\n  \"PM-R42A\": {\n   \"amount\": 1420.0,\n   \"card_last4\": \"6202\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R42\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R42A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R42B\": {\n   \"amount\": 189.0,\n   \"card_last4\": \"6202\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R42\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R42B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R42C\": {\n   \"amount\": 176.0,\n   \"card_last4\": \"6202\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R42\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R42C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R42A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R42\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"JP\"\n   },\n   \"payment_id\": \"PM-R42A\",\n   \"platform_booking_id\": \"TD-R42A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 1420.0,\n   \"vendor_booking_id\": \"KUF02A\",\n   \"vendor_id\": \"V-KU\"\n  },\n  \"TD-R42B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R42\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R42B\",\n   \"platform_booking_id\": \"TD-R42B\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 189.0,\n   \"vendor_booking_id\": \"DLF02B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R42C\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R42\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R42C\",\n   \"platform_booking_id\": \"TD-R42C\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 176.0,\n   \"vendor_booking_id\": \"DLF02C\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"status_events\": {\n  \"SE-R42A\": {\n   \"data\": {\n    \"actual_arrival\": \"2026-10-29T09:00:00-07:00\",\n    \"delay_min\": 30,\n    \"flight\": \"KU4202\",\n    \"scheduled_arrival\": \"2026-10-29T08:30:00-07:00\",\n    \"status\": \"landed\"\n   },\n   \"event_id\": \"SE-R42A\",\n   \"service_date\": \"2026-10-28\",\n   \"service_id\": \"KU4202\",\n   \"vendor_id\": \"V-KU\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLF02B\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T16:05:00-05:00\",\n      \"dep\": \"2026-10-29T10:15:00-07:00\",\n      \"flight\": \"DL4302\",\n      \"from\": \"SFO\",\n      \"to\": \"IAH\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R42B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLF02B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DLF02C\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-11-05T11:10:00-08:00\",\n      \"dep\": \"2026-11-05T09:00:00-06:00\",\n      \"flight\": \"DL4402\",\n      \"from\": \"IAH\",\n      \"to\": \"SFO\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R42C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLF02C\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-KU|KUF02A\": {\n   \"data\": {\n    \"fare_class\": \"Saver\",\n    \"pax\": 1,\n    \"region\": \"JP\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T08:30:00-07:00\",\n      \"dep\": \"2026-10-28T23:55:00+09:00\",\n      \"flight\": \"KU4202\",\n      \"from\": \"HND\",\n      \"to\": \"SFO\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R42A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"KUF02A\",\n   \"vendor_id\": \"V-KU\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "252d755e79d1be4af0bf20abc5b92b7d\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/42_separate_tickets_partner_late_classic\"\ndescription = \"Partner status (landed 09:00, customs to 11:30) -> Delta booking, separate ticket, Classic -> search -> change to the 13:05, the first he can make, USD 60 within the USD 100 authorized.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"42_separate_tickets_partner_late_classic__right\"\nchain = \"Partner status (landed 09:00, customs to 11:30) -> Delta booking, separate ticket, Classic -> search -> change to the 13:05, the first he can make, USD 60 within the USD 100 authorized.\"\npersona = \"spouse writing for husband\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-KU\"]\nvendors_written = [\"V-DELTA\"]\ntrap_families = [\"conditional\", \"identity\", \"liability\", \"time\"]\ntraps = [\"change_return_instead\", \"free_late_flight\", \"goodwill_for_separate_ticket\", \"too_tight_flight\"]\ncode_guards_on_route = [\"CV-SEATS\", \"IP-1\", \"IP-1b\", \"P-DELTA\", \"P-DELTA-BASIC\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-FLIGHT-PORT\", \"CR-ITIN\", \"CR-MSC-NAME\", \"IP-11\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"claims\", \"reply.1\"]\ncomplaint = \"https://www.reddit.com/r/unitedairlines/comments/1pwd9f8/ana_international_arrival_and_united_domestic/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLF02B"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLF02B",
+     "card_last4": "6202",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "kenji.watanabe02@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "date": "2026-10-28",
+     "flight": "KU4202",
+     "vendor_id": "V-KU"
+    },
+    "name": "flight_get_status"
+   },
+   {
+    "args": {
+     "record_locator": "DLF02B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "date": "2026-10-29",
+     "dest": "IAH",
+     "origin": "SFO",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_search"
+   },
+   {
+    "args": {
+     "max_fare_difference": 100.0,
+     "new_flight": "DL4602",
+     "record_locator": "DLF02B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_change"
+   },
+   {
+    "args": {
+     "text": "No, an arrival delay does not give a free rebooking here: the Delta flight DLF02B is on a separate ticket from the KU Airways flight. I moved Kenji to DL4602 leaving SFO at 13:05 on 29 October, the first flight he can reach after customs, for USD 60, within the USD 100 you allowed."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

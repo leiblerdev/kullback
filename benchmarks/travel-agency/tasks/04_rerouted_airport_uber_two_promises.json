@@ -1,0 +1,368 @@
+{
+ "alts": {
+  "read_bookings_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR04A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR04A",
+      "card_last4": "4404",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "grant.ellison@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_commitments"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "amount": 190.0,
+      "commitment_id": "CM-R04B",
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R04B",
+      "queue": "tier2_goodwill",
+      "summary": "Open commitment: Uber MKE to Oshkosh, receipt USD 190."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "amount": 190.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R04A",
+      "queue": "supplier_relations",
+      "summary": "Delta gate agent promised the MKE to Oshkosh Uber; recover USD 190 from Delta."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "You are owed USD 190 for the Uber from Milwaukee to Oshkosh, and two separate promises cover it, so each has its own handler. The Goodwill desk (tier2_goodwill) is handling the promise our chat made (commitment CM-R04B); I escalated it to them. Supplier relations (supplier_relations) is handling the Delta gate agent's promise and will recover the USD 190 from Delta. Each team will contact you, and nothing is paid yet. No meal voucher will be given: that meal-voucher commitment, CM-R04C, was superseded, so it is not escalated or paid."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "supplier_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR04A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR04A",
+      "card_last4": "4404",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "grant.ellison@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_commitments"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "amount": 190.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R04A",
+      "queue": "supplier_relations",
+      "summary": "Delta gate agent promised the MKE to Oshkosh Uber; recover USD 190 from Delta."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "amount": 190.0,
+      "commitment_id": "CM-R04B",
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R04B",
+      "queue": "tier2_goodwill",
+      "summary": "Open commitment: Uber MKE to Oshkosh, receipt USD 190."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "You are owed USD 190 for the Uber from Milwaukee to Oshkosh, and two separate promises cover it, so each has its own handler. The Goodwill desk (tier2_goodwill) is handling the promise our chat made (commitment CM-R04B); I escalated it to them. Supplier relations (supplier_relations) is handling the Delta gate agent's promise and will recover the USD 190 from Delta. Each team will contact you, and nothing is paid yet. No meal voucher will be given: that meal-voucher commitment, CM-R04C, was superseded, so it is not escalated or paid."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 190.0,
+      "commitment_id": "CM-R04B",
+      "currency": "USD",
+      "customer_id": "C-R04",
+      "owner": "Goodwill desk",
+      "platform_booking_id": "TD-R04B",
+      "queue": "tier2_goodwill",
+      "sla_hours": 48
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 190.0,
+      "commitment_id": null,
+      "currency": "USD",
+      "customer_id": "C-R04",
+      "owner": "Supplier relations",
+      "platform_booking_id": "TD-R04A",
+      "queue": "supplier_relations",
+      "sla_hours": 72
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R04"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Tells the customer that the Goodwill desk (tier2_goodwill) is handling the USD 190 Uber promise that TripDesk's chat made. (met = 1: In its replies to the customer, does the agent do this: Tells the customer that the Goodwill desk (tier2_goodwill) is handling the USD 190 Uber promise that TripDesk's chat made.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Tells the customer that Supplier relations (supplier_relations) is handling the Delta gate agent's promise to reimburse the USD 190 Uber. (met = 1: In its replies to the customer, does the agent do this: Tells the customer that Supplier relations (supplier_relations) is handling the Delta gate agent's promise to reimburse the USD 190 Uber.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: States that no meal voucher will be given. (met = 1: In its replies to the customer, does the agent do this: States that no meal voucher will be given.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Explains that the meal-voucher commitment CM-R04C was superseded, so it is not escalated or paid. (met = 1: In its replies to the customer, does the agent do this: Explains that the meal-voucher commitment CM-R04C was superseded, so it is not escalated or paid.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "Delta cancelled my Atlanta flight for maintenance and the gate agent rebooked me into Milwaukee instead of Appleton. She told me Delta would reimburse the Uber to Oshkosh, I told her it was $190 and she said fine. I took the Uber, and your chat person said the same thing when I texted the next morning. I sent the receipt and Delta denied it twice and closed the case. Booking DLR04A. Somebody owes me $190. Also your chat once said you'd look into a meal voucher, whatever. Tell me who is handling each of these, and what happened to the meal voucher? grant.ellison@example.com, 4404.",
+  "strict_tables": [],
+  "task": "04_rerouted_airport_uber_two_promises",
+  "token": "33f882605ec42ec34fcbd363c7bf1fa8"
+ },
+ "instruction": "Delta cancelled my Atlanta flight for maintenance and the gate agent rebooked me into Milwaukee instead of Appleton. She told me Delta would reimburse the Uber to Oshkosh, I told her it was $190 and she said fine. I took the Uber, and your chat person said the same thing when I texted the next morning. I sent the receipt and Delta denied it twice and closed the case. Booking DLR04A. Somebody owes me $190. Also your chat once said you'd look into a meal voucher, whatever. Tell me who is handling each of these, and what happened to the meal voucher? grant.ellison@example.com, 4404.\n",
+ "overlay": "{\n \"commitments\": {\n  \"CM-R04B\": {\n   \"authority_limit\": 500.0,\n   \"commitment_id\": \"CM-R04B\",\n   \"created_at\": \"2026-10-25T09:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R04\",\n   \"made_by\": \"agent_lena\",\n   \"max_amount\": 190.0,\n   \"platform_booking_id\": \"TD-R04B\",\n   \"role\": \"agent\",\n   \"status\": \"open\",\n   \"text\": \"TripDesk will cover the Uber from Milwaukee to Oshkosh up to USD 190 once the receipt is in.\"\n  },\n  \"CM-R04C\": {\n   \"authority_limit\": 500.0,\n   \"commitment_id\": \"CM-R04C\",\n   \"created_at\": \"2026-10-24T18:50:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R04\",\n   \"made_by\": \"agent_lena\",\n   \"max_amount\": 30.0,\n   \"platform_booking_id\": \"TD-R04A\",\n   \"role\": \"agent\",\n   \"status\": \"superseded\",\n   \"text\": \"We will look into a meal voucher.\"\n  }\n },\n \"contact_history\": {\n  \"CT-R04A\": {\n   \"actor\": \"delta_gate_agent\",\n   \"channel\": \"desk\",\n   \"contact_id\": \"CT-R04A\",\n   \"customer_id\": \"C-R04\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R04A\",\n   \"text\": \"Gate agent: Delta will reimburse the Uber from MKE to Oshkosh, about USD 190.\",\n   \"ts\": \"2026-10-24T18:40:00-04:00\"\n  }\n },\n \"customers\": {\n  \"C-R04\": {\n   \"customer_id\": \"C-R04\",\n   \"email\": \"grant.ellison@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Grant Ellison\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"documents\": {\n  \"DOC-R04B\": {\n   \"amount\": 190.0,\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R04\",\n   \"doc_id\": \"DOC-R04B\",\n   \"kind\": \"receipt\",\n   \"meta\": {\n    \"ride\": \"MKE to Oshkosh\"\n   },\n   \"platform_booking_id\": \"TD-R04B\",\n   \"received_at\": \"2026-10-28T09:00:00-04:00\",\n   \"received_via\": \"app\",\n   \"routed\": 0\n  }\n },\n \"payments\": {\n  \"PM-R04A\": {\n   \"amount\": 388.0,\n   \"card_last4\": \"4404\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R04\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R04A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R04B\": {\n   \"amount\": 190.0,\n   \"card_last4\": \"4404\",\n   \"created_at\": \"2026-10-25T00:40:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R04\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R04B\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R04A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R04\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-24T16:30:00-04:00\",\n     \"by\": \"airline\"\n    },\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R04A\",\n   \"platform_booking_id\": \"TD-R04A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 388.0,\n   \"vendor_booking_id\": \"DLR04A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R04B\": {\n   \"created_at\": \"2026-10-25T00:40:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R04\",\n   \"details\": {},\n   \"payment_id\": \"PM-R04B\",\n   \"platform_booking_id\": \"TD-R04B\",\n   \"product_type\": \"ride\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 190.0,\n   \"vendor_booking_id\": \"UB-R04B\",\n   \"vendor_id\": \"V-UBER\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR04A\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"reroute\": {\n     \"accepted\": true,\n     \"instead_of\": \"ATW\",\n     \"to\": \"MKE\"\n    },\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-24T19:10:00-04:00\",\n      \"dep\": \"2026-10-24T16:00:00-05:00\",\n      \"flight\": \"DL2210\",\n      \"from\": \"HOU\",\n      \"to\": \"ATL\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R04A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DLR04A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-UBER|UB-R04B\": {\n   \"data\": {\n    \"dropoff\": \"Oshkosh\",\n    \"ended_at\": \"2026-10-25T02:10:00-05:00\",\n    \"fare_lines\": [\n     {\n      \"amount\": 176.0,\n      \"type\": \"trip\"\n     },\n     {\n      \"amount\": 14.0,\n      \"type\": \"airport_fee\"\n     }\n    ],\n    \"kind\": \"on_demand\",\n    \"pickup\": \"MKE Airport\",\n    \"requested_at\": \"2026-10-25T00:40:00-05:00\"\n   },\n   \"platform_booking_id\": \"TD-R04B\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"UB-R04B\",\n   \"vendor_id\": \"V-UBER\"\n  }\n }\n}\n",
+ "places": {
+  "PL-CDB83FF1": {
+   "aliases": [
+    "oshkosh"
+   ],
+   "text": "Oshkosh"
+  },
+  "PL-E74E6B9B": {
+   "aliases": [
+    "milwaukee mitchell",
+    "milwaukee mitchell airport",
+    "milwaukee mitchell airport mke",
+    "milwaukee mitchell international airport",
+    "milwaukee mitchell international airport mke",
+    "milwaukee mitchell mke",
+    "mitchell",
+    "mitchell airport",
+    "mitchell airport mke",
+    "mitchell international airport",
+    "mitchell international airport mke",
+    "mitchell mke",
+    "mke",
+    "mke airport",
+    "mke international airport"
+   ],
+   "text": "MKE Airport"
+  }
+ },
+ "secret": "33f882605ec42ec34fcbd363c7bf1fa8\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/04_rerouted_airport_uber_two_promises\"\ndescription = \"commitments, contact history and documents -> the TripDesk promise on the Uber booking goes to goodwill with its commitment id; the Delta gate promise on the flight goes to supplier relations.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"04_rerouted_airport_uber_two_promises__right\"\nchain = \"commitments, contact history and documents -> the TripDesk promise on the Uber booking goes to goodwill with its commitment id; the Delta gate promise on the flight goes to supplier relations.\"\npersona = \"business traveller\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-UBER\"]\nvendors_written = []\ntrap_families = [\"history\", \"liability\", \"restraint\"]\ntraps = [\"gate_promise_to_goodwill\", \"honour_superseded_voucher\", \"refund_uber_directly\"]\ncode_guards_on_route = [\"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9\", \"IP-9d\", \"IP-9e\"]\njudge_items_on_route = [\"CR-FCC\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/delta/comments/1mlu5kn/delta_had_to_rebook_me_to_another_airport_and/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLR04A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLR04A",
+     "card_last4": "4404",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "grant.ellison@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_commitments"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_contact_history"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_documents"
+   },
+   {
+    "args": {
+     "amount": 190.0,
+     "commitment_id": "CM-R04B",
+     "currency": "USD",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "TD-R04B",
+     "queue": "tier2_goodwill",
+     "summary": "Open commitment: Uber MKE to Oshkosh, receipt USD 190."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "amount": 190.0,
+     "currency": "USD",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "TD-R04A",
+     "queue": "supplier_relations",
+     "summary": "Delta gate agent promised the MKE to Oshkosh Uber; recover USD 190 from Delta."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "text": "You are owed USD 190 for the Uber from Milwaukee to Oshkosh, and two separate promises cover it, so each has its own handler. The Goodwill desk (tier2_goodwill) is handling the promise our chat made (commitment CM-R04B); I escalated it to them. Supplier relations (supplier_relations) is handling the Delta gate agent's promise and will recover the USD 190 from Delta. Each team will contact you, and nothing is paid yet. No meal voucher will be given: that meal-voucher commitment, CM-R04C, was superseded, so it is not escalated or paid."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

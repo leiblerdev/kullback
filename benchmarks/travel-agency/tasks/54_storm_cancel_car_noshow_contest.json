@@ -1,0 +1,461 @@
+{
+ "alts": {
+  "hertz_info_request.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR54A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR54A",
+      "card_last4": "5521",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "owen.fitzgerald@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLR54A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$3.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$2.platform_booking_id",
+      "reason_code": "airline_cancelled"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "confirmation": "LKR54B",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R54C",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_chargebacks"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Please confirm the no-show record for HZ-R54C: pickup 24 Oct 13:30, window closed 19:30, no cancellation before the window.",
+      "platform_booking_id": "$7.platform_booking_id",
+      "request_type": "info_request",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$9.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "chargeback_id": "$8.chargebacks.1.chargeback_id",
+      "decision": "contest",
+      "evidence": "Hertz pay_now reservation HZ-R54C, status no_show: pickup 2026-10-24 13:30 MDT, window closed 19:30, no flight number on the reservation; the Delta cancellation came at 20:40 MDT, after the window. CR-HERTZ-CANCEL: a pay_now reservation neither cancelled nor picked up forfeits the prepaid amount."
+     },
+     "name": "respond_chargeback"
+    },
+    {
+     "args": {
+      "text": "I refunded the 412 USD Delta fare for the cancelled DLR54A to your card. The Denver hotel night (189 USD) was already refunded to your card on 25 Oct, so nothing more is refunded for it. I answered your Visa dispute with our records: the Hertz HZ-R54C reservation was prepaid, carried no flight number, and was neither cancelled nor picked up before its window closed at 19:30, before Delta cancelled at 20:40 Denver time, so under Hertz terms the 225 USD is forfeited and we contested the dispute. Visa decides it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "hotel_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR54A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR54A",
+      "card_last4": "5521",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "owen.fitzgerald@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "confirmation": "LKR54B",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "DLR54A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$5.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$4.platform_booking_id",
+      "reason_code": "airline_cancelled"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R54C",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_chargebacks"
+    },
+    {
+     "args": {
+      "chargeback_id": "$8.chargebacks.1.chargeback_id",
+      "decision": "contest",
+      "evidence": "Hertz pay_now reservation HZ-R54C, status no_show: pickup 2026-10-24 13:30 MDT, window closed 19:30, no flight number on the reservation; the Delta cancellation came at 20:40 MDT, after the window. CR-HERTZ-CANCEL: a pay_now reservation neither cancelled nor picked up forfeits the prepaid amount."
+     },
+     "name": "respond_chargeback"
+    },
+    {
+     "args": {
+      "text": "I refunded the 412 USD Delta fare for the cancelled DLR54A to your card. The Denver hotel night (189 USD) was already refunded to your card on 25 Oct, so nothing more is refunded for it. I answered your Visa dispute with our records: the Hertz HZ-R54C reservation was prepaid, carried no flight number, and was neither cancelled nor picked up before its window closed at 19:30, before Delta cancelled at 20:40 Denver time, so under Hertz terms the 225 USD is forfeited and we contested the dispute. Visa decides it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R54A, cancelled, dated 2026-10-01, already on file before this conversation",
+    "platform_bookings TD-R54B, cancelled, dated 2026-10-01, already on file before this conversation",
+    "vendor_bookings V-DELTA|DLR54A, cancelled, already on file before this conversation",
+    "vendor_bookings V-HTL-LAKESIDE|LKR54B, cancelled, already on file before this conversation"
+   ],
+   "a refund was issued to the customer": [
+    "refunds RF-R54B, 189 USD, paid, dated 2026-10-25, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "chargebacks": [
+    {
+     "cols": {
+      "responded_at": "2026-10-29T12:00:00-04:00",
+      "response": "contest",
+      "status": "contested"
+     },
+     "key": "CB-R54",
+     "op": "change"
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 412.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R54A",
+      "platform_booking_id": "TD-R54A",
+      "reason_code": "airline_cancelled",
+      "source": "agent",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R54"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-3] Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted? (met = 1: Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "P-LIAB-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.INS-INSURER] Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy? (met = 1: Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "INS-INSURER"
+   },
+   {
+    "checkpoint": "- [judge.GP-RAIL-EXCHANGE] Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it? (met = 1: Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "GP-RAIL-EXCHANGE"
+   },
+   {
+    "checkpoint": "- [judge.TP-NOT-TRIPDESK] Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it? (met = 1: Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "TP-NOT-TRIPDESK"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-U2-CANCEL] Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives? (met = 1: Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives?)",
+    "scope": [
+     "flight_cancel",
+     "issue_refund"
+    ],
+    "tag": "WC-U2-CANCEL"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that 412 USD for the cancelled Delta flight was refunded to the original card. (met = 1: In its replies to the customer, does the agent do this: States that 412 USD for the cancelled Delta flight was refunded to the original card.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that nothing more is refunded for the 189 USD Denver hotel night. (met = 1: In its replies to the customer, does the agent do this: States that nothing more is refunded for the 189 USD Denver hotel night.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: States that the Denver hotel night was already refunded on 25 Oct. (met = 1: In its replies to the customer, does the agent do this: States that the Denver hotel night was already refunded on 25 Oct.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: States that the Visa dispute on the 225 USD Hertz car was contested because the prepaid car was neither cancelled nor picked up before its window closed. (met = 1: In its replies to the customer, does the agent do this: States that the Visa dispute on the 225 USD Hertz car was contested because the prepaid car was neither cancelled nor picked up before its window closed.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "Delta kept delaying my flight DLR54A to Denver on the 24th, we sat on the taxiway for 3 hours in a thunderstorm, and that night they cancelled it. Then Hertz kept my whole 225 dollars for the car as a NO SHOW. How was I supposed to show up?? I am not asking for goodwill on the car. I disputed it with Visa: answer that dispute today with whatever your records show, they prove I'm right. Also make sure I get the flight money and the Denver hotel back. owen.fitzgerald@example.com, card 5521.",
+  "strict_tables": [],
+  "task": "54_storm_cancel_car_noshow_contest",
+  "token": "8d4deb2f64898ee4ebddfbb2c06916b0"
+ },
+ "instruction": "Delta kept delaying my flight DLR54A to Denver on the 24th, we sat on the taxiway for 3 hours in a thunderstorm, and that night they cancelled it. Then Hertz kept my whole 225 dollars for the car as a NO SHOW. How was I supposed to show up?? I am not asking for goodwill on the car. I disputed it with Visa: answer that dispute today with whatever your records show, they prove I'm right. Also make sure I get the flight money and the Denver hotel back. owen.fitzgerald@example.com, card 5521.\n",
+ "overlay": "{\n \"chargebacks\": {\n  \"CB-R54\": {\n   \"amount\": 225.0,\n   \"chargeback_id\": \"CB-R54\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"evidence\": null,\n   \"filed_at\": \"2026-10-26T09:00:00-04:00\",\n   \"network_id\": \"V-VISA\",\n   \"payment_id\": \"PM-R54C\",\n   \"platform_booking_id\": \"TD-R54C\",\n   \"reason_code\": \"13.1\",\n   \"respond_by\": \"2026-11-25T09:00:00-05:00\",\n   \"responded_at\": null,\n   \"response\": null,\n   \"status\": \"open\"\n  },\n  \"CB-R54X\": {\n   \"amount\": 268.0,\n   \"chargeback_id\": \"CB-R54X\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"evidence\": \"flown as booked\",\n   \"filed_at\": \"2026-03-20T09:00:00-04:00\",\n   \"network_id\": \"V-VISA\",\n   \"payment_id\": \"PM-R54X\",\n   \"platform_booking_id\": \"TD-R54X\",\n   \"reason_code\": \"13.1\",\n   \"respond_by\": \"2026-04-19T09:00:00-04:00\",\n   \"responded_at\": \"2026-03-25T09:00:00-04:00\",\n   \"response\": \"contest\",\n   \"status\": \"won\"\n  }\n },\n \"customers\": {\n  \"C-R54\": {\n   \"customer_id\": \"C-R54\",\n   \"email\": \"owen.fitzgerald@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Owen Fitzgerald\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R54A\": {\n   \"amount\": 412.0,\n   \"card_last4\": \"5521\",\n   \"created_at\": \"2026-10-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R54A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R54B\": {\n   \"amount\": 189.0,\n   \"card_last4\": \"5521\",\n   \"created_at\": \"2026-10-01T10:05:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R54B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R54C\": {\n   \"amount\": 225.0,\n   \"card_last4\": \"5521\",\n   \"created_at\": \"2026-10-01T10:10:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"dispute_status\": \"open\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R54C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R54X\": {\n   \"amount\": 268.0,\n   \"card_last4\": \"5521\",\n   \"created_at\": \"2026-02-10T10:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"dispute_status\": \"won\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R54X\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R54A\": {\n   \"created_at\": \"2026-10-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-24T22:40:00-04:00\",\n     \"by\": \"airline\",\n     \"cause\": \"weather\"\n    },\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R54A\",\n   \"platform_booking_id\": \"TD-R54A\",\n   \"product_type\": \"flight\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 412.0,\n   \"vendor_booking_id\": \"DLR54A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R54B\": {\n   \"created_at\": \"2026-10-01T10:05:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-24T23:00:00-04:00\",\n     \"by\": \"customer\",\n     \"customer_confirmed\": true\n    },\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R54B\",\n   \"platform_booking_id\": \"TD-R54B\",\n   \"product_type\": \"hotel\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 189.0,\n   \"vendor_booking_id\": \"LKR54B\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"TD-R54C\": {\n   \"created_at\": \"2026-10-01T10:10:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R54C\",\n   \"platform_booking_id\": \"TD-R54C\",\n   \"product_type\": \"car\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 225.0,\n   \"vendor_booking_id\": \"HZ-R54C\",\n   \"vendor_id\": \"V-HERTZ\"\n  },\n  \"TD-R54X\": {\n   \"created_at\": \"2026-02-10T10:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R54\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R54X\",\n   \"platform_booking_id\": \"TD-R54X\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 268.0,\n   \"vendor_booking_id\": \"DLR54X\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"refunds\": {\n  \"RF-R54B\": {\n   \"amount\": 189.0,\n   \"created_at\": \"2026-10-25T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"destination\": \"original_payment\",\n   \"payment_id\": \"PM-R54B\",\n   \"platform_booking_id\": \"TD-R54B\",\n   \"reason_code\": \"customer_cancel_free\",\n   \"refund_id\": \"RF-R54B\",\n   \"source\": \"agent\",\n   \"state\": \"paid\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR54A\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-24T13:05:00-06:00\",\n      \"dep\": \"2026-10-24T11:20:00-04:00\",\n      \"flight\": \"DL2287\",\n      \"from\": \"ATL\",\n      \"to\": \"DEN\"\n     }\n    ],\n    \"taxi_hold_min\": 180\n   },\n   \"platform_booking_id\": \"TD-R54A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"DLR54A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DLR54X\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-03-03T10:00:00-05:00\",\n      \"dep\": \"2026-03-03T08:00:00-05:00\",\n      \"flight\": \"DL900\",\n      \"from\": \"ATL\",\n      \"to\": \"BOS\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R54X\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DLR54X\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-HERTZ|HZ-R54C\": {\n   \"data\": {\n    \"car_class\": \"Midsize SUV\",\n    \"currency\": \"USD\",\n    \"daily_rate\": 75.0,\n    \"deposit_hold\": 200.0,\n    \"pickup_location\": \"DEN airport\",\n    \"pickup_time\": \"2026-10-24T13:30:00-06:00\",\n    \"pickup_window_closes\": \"2026-10-24T19:30:00-06:00\",\n    \"rate_plan\": \"pay_now\",\n    \"return_location\": \"DEN airport\",\n    \"return_time\": \"2026-10-27T13:30:00-06:00\",\n    \"state\": \"CO\"\n   },\n   \"platform_booking_id\": \"TD-R54C\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"HZ-R54C\",\n   \"vendor_id\": \"V-HERTZ\"\n  },\n  \"V-HTL-LAKESIDE|LKR54B\": {\n   \"data\": {\n    \"check_in\": \"2026-10-24\",\n    \"check_out\": \"2026-10-25\",\n    \"city\": \"Denver\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-24T23:59:00-06:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 189.0,\n     \"rule_id\": \"SC-LAKESIDE-1\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R54B\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"LKR54B\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "8d4deb2f64898ee4ebddfbb2c06916b0\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/54_storm_cancel_car_noshow_contest\"\ndescription = \"Delta flight delayed then cancelled by a thunderstorm -> quote and cash refund -> hotel night already refunded (read) -> prepaid Hertz car no-show (no flight on the reservation, window closed before the cancellation) -> Visa chargeback on the car contested, as the customer asked it answered.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"54_storm_cancel_car_noshow_contest__right\"\nchain = \"Delta flight delayed then cancelled by a thunderstorm -> quote and cash refund -> hotel night already refunded (read) -> prepaid Hertz car no-show (no flight on the reservation, window closed before the cancellation) -> Visa chargeback on the car contested, as the customer asked it answered.\"\npersona = \"solo\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-HERTZ\", \"V-HTL-LAKESIDE\", \"V-VISA\"]\nvendors_written = [\"V-DELTA\", \"V-HERTZ\", \"V-VISA\"]\ntrap_families = [\"conditional\", \"history\", \"liability\", \"time\"]\ntraps = [\"accept_dispute_customer_owes\", \"goodwill_for_car\", \"hotel_as_supplier_fault\", \"recover_car_from_hertz\", \"refund_flight_to_wallet\"]\ncode_guards_on_route = [\"CB-EVIDENCE\", \"CB-VENDOR-FAULT\", \"CV-REASON\", \"IP-1\", \"IP-15\", \"IP-1b\", \"P-DOT-AGENT\", \"P-DOT-CASH\", \"P-DOT-REFUND\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CV-LOST-ITEM\", \"GP-RAIL-EXCHANGE\", \"INS-INSURER\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-LIAB-3\", \"TP-NOT-TRIPDESK\", \"WC-U2-CANCEL\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/AmItheAsshole/comments/1tzblkb/aita_flight_cancelled_on_day_of_rental_car_pickup/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLR54A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLR54A",
+     "card_last4": "5521",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "owen.fitzgerald@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "DLR54A",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$3.refundable",
+     "currency": "USD",
+     "destination": "original_payment",
+     "platform_booking_id": "$2.platform_booking_id",
+     "reason_code": "airline_cancelled"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "confirmation": "LKR54B",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$5.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "reservation_id": "HZ-R54C",
+     "vendor_id": "V-HERTZ"
+    },
+    "name": "car_get_reservation"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_chargebacks"
+   },
+   {
+    "args": {
+     "chargeback_id": "$8.chargebacks.1.chargeback_id",
+     "decision": "contest",
+     "evidence": "Hertz pay_now reservation HZ-R54C, status no_show: pickup 2026-10-24 13:30 MDT, window closed 19:30, no flight number on the reservation; the Delta cancellation came at 20:40 MDT, after the window. CR-HERTZ-CANCEL: a pay_now reservation neither cancelled nor picked up forfeits the prepaid amount."
+    },
+    "name": "respond_chargeback"
+   },
+   {
+    "args": {
+     "text": "I refunded the 412 USD Delta fare for the cancelled DLR54A to your card. The Denver hotel night (189 USD) was already refunded to your card on 25 Oct, so nothing more is refunded for it. I answered your Visa dispute with our records: the Hertz HZ-R54C reservation was prepaid, carried no flight number, and was neither cancelled nor picked up before its window closed at 19:30, before Delta cancelled at 20:40 Denver time, so under Hertz terms the 225 USD is forfeited and we contested the dispute. Visa decides it."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

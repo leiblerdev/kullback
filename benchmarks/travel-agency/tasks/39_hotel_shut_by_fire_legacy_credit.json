@@ -1,0 +1,476 @@
+{
+ "alts": {
+  "claim_before_refund.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LKE14A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LKE14A",
+      "card_last4": "6414",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "brian.kowalczyk@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "confirmation": "LKE14A",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "Building closed by the fire department on arrival; the guests never cancelled.",
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "amount": 80.0,
+      "currency": "USD",
+      "message": "Property closed by the fire department; guests relocated to River North at USD 560 against USD 480 booked. Claiming the USD 80 difference.",
+      "platform_booking_id": "TD-R39A",
+      "request_type": "relocation_claim",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R39A"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": 480.0,
+      "currency": "USD",
+      "platform_booking_id": "TD-R39A",
+      "reason_code": "customer_cancel_free"
+     },
+     "name": "issue_refund_legacy"
+    },
+    {
+     "args": {
+      "text": "The Lakeside closure was recorded as the property's fault, not a late cancel, and USD 480 for LKE14A was refunded to your wallet credit. The USD 80 extra for River North is not refunded to you now; I filed a USD 80 relocation claim with Lakeside Inn for it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "more_reads.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LKE14A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LKE14A",
+      "card_last4": "6414",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "brian.kowalczyk@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_commitments"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "confirmation": "LKE14A",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "Building closed by the fire department on arrival; the guests never cancelled.",
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$7.refundable",
+      "currency": "USD",
+      "platform_booking_id": "$4.platform_booking_id",
+      "reason_code": "customer_cancel_free"
+     },
+     "name": "issue_refund_legacy"
+    },
+    {
+     "args": {
+      "amount": 80.0,
+      "currency": "USD",
+      "message": "Supplier fault: family relocated to River North RNE14B at USD 560 against USD 480 booked; difference USD 80.",
+      "platform_booking_id": "$4.platform_booking_id",
+      "request_type": "relocation_claim",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "confirmation": "RNE14C",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "text": "The Lakeside closure was recorded as the property's fault, not a late cancel, and USD 480 for LKE14A was refunded to your wallet credit. The USD 80 extra for River North is not refunded to you now; I filed a USD 80 relocation claim with Lakeside Inn for it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R39A, cancelled, dated 2026-05-02, already on file before this conversation",
+    "vendor_bookings V-HTL-LAKESIDE|LKE14A, cancelled, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "platform_bookings": [
+    {
+     "cols": {
+      "details": {
+       "cancel_event": {
+        "at": "2026-10-25T08:30:00-05:00",
+        "by": "property",
+        "cause": "supplier_fault",
+        "customer_confirmed": false,
+        "entered_by": "TripDesk agent",
+        "recorded_as": "late_cancel"
+       },
+       "check_in": "2026-10-24",
+       "legacy_system": true
+      }
+     },
+     "key": "TD-R39A",
+     "op": "change"
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 480.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "wallet",
+      "payment_id": null,
+      "platform_booking_id": "TD-R39A",
+      "reason_code": "customer_cancel_free",
+      "source": "legacy",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R39"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 80.0,
+      "currency": "USD",
+      "platform_booking_id": "TD-R39A",
+      "reply_status": "disputed",
+      "reply_text": "We do not accept this claim. The rate shown on your site was wrong, which is why we had to cancel. Take it up with your account manager.",
+      "request_type": "relocation_claim",
+      "vendor_id": "V-HTL-LAKESIDE"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-3] Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted? (met = 1: Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "P-LIAB-3"
+   },
+   {
+    "checkpoint": "- [judge.P-DOT-NODELAY] Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking? (met = 1: Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking?)",
+    "scope": [
+     "reclassify_cancellation"
+    ],
+    "tag": "P-DOT-NODELAY"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.INS-INSURER] Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy? (met = 1: Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "INS-INSURER"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-RAIL-EXCHANGE] Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it? (met = 1: Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "GP-RAIL-EXCHANGE"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.TP-NOT-TRIPDESK] Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it? (met = 1: Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "TP-NOT-TRIPDESK"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the USD 80 River North difference is not refunded to the customer now. (met = 1: In its replies to the customer, does the agent do this: Says the USD 80 River North difference is not refunded to the customer now.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says a USD 80 relocation claim for the River North difference was filed with Lakeside Inn. (met = 1: In its replies to the customer, does the agent do this: Says a USD 80 relocation claim for the River North difference was filed with Lakeside Inn.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says USD 480 for the Lakeside booking LKE14A was refunded to wallet credit. (met = 1: In its replies to the customer, does the agent do this: Says USD 480 for the Lakeside booking LKE14A was refunded to wallet credit.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Does not say that Lakeside Inn agreed to pay, or has paid, the USD 80. (met = 1: In its replies to the customer, does the agent do this: Does not say that Lakeside Inn agreed to pay, or has paid, the USD 80.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "We booked four hotels for a 17 day family trip back in May. We got to the Lakeside Inn (LKE14A) at 11 pm and the fire department had shut the building. The manager squeezed the five of us into a two-queen room somewhere else for the night. Next morning your agents cancelled the Lakeside and booked us into River North (RNE14B) for the three nights, and we paid $560 for that, which is $80 more than the Lakeside's $480. Now the Lakeside booking shows as a late cancel with nothing back! A refund or a credit on my account, either is fine, for the Lakeside booking. And we shouldn't be paying more for a room we were forced into, so we shouldn't pay the $80 extra. Our other two hotels later in the trip are fine. The $80 is the only extra cost I am asking about. Claim the $80 on the Lakeside booking, and if the Lakeside refuses it, just tell me; do not open anything else. brian.kowalczyk@example.com, card 6414.",
+  "strict_tables": [],
+  "task": "39_hotel_shut_by_fire_legacy_credit",
+  "token": "ae001e18769d40b2f8139fba882f3d6a"
+ },
+ "instruction": "We booked four hotels for a 17 day family trip back in May. We got to the Lakeside Inn (LKE14A) at 11 pm and the fire department had shut the building. The manager squeezed the five of us into a two-queen room somewhere else for the night. Next morning your agents cancelled the Lakeside and booked us into River North (RNE14B) for the three nights, and we paid $560 for that, which is $80 more than the Lakeside's $480. Now the Lakeside booking shows as a late cancel with nothing back! A refund or a credit on my account, either is fine, for the Lakeside booking. And we shouldn't be paying more for a room we were forced into, so we shouldn't pay the $80 extra. Our other two hotels later in the trip are fine. The $80 is the only extra cost I am asking about. Claim the $80 on the Lakeside booking, and if the Lakeside refuses it, just tell me; do not open anything else. brian.kowalczyk@example.com, card 6414.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R39\": {\n   \"customer_id\": \"C-R39\",\n   \"email\": \"brian.kowalczyk@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Brian Kowalczyk\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R39A\": {\n   \"amount\": 480.0,\n   \"card_last4\": \"6414\",\n   \"created_at\": \"2026-05-02T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R39A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R39B\": {\n   \"amount\": 560.0,\n   \"card_last4\": \"6414\",\n   \"created_at\": \"2026-10-25T09:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R39B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R39C\": {\n   \"amount\": 720.0,\n   \"card_last4\": \"6414\",\n   \"created_at\": \"2026-05-02T10:05:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R39C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R39D\": {\n   \"amount\": 640.0,\n   \"card_last4\": \"6414\",\n   \"created_at\": \"2026-05-02T09:55:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R39D\",\n   \"status\": \"captured\"\n  },\n  \"PM-R39E\": {\n   \"amount\": 900.0,\n   \"card_last4\": \"6414\",\n   \"created_at\": \"2026-05-02T10:02:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R39E\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R39A\": {\n   \"created_at\": \"2026-05-02T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-25T08:30:00-05:00\",\n     \"by\": \"property\",\n     \"cause\": \"closed by the fire department\",\n     \"customer_confirmed\": false,\n     \"entered_by\": \"TripDesk agent\",\n     \"recorded_as\": \"late_cancel\"\n    },\n    \"check_in\": \"2026-10-24\",\n    \"legacy_system\": true\n   },\n   \"payment_id\": \"PM-R39A\",\n   \"platform_booking_id\": \"TD-R39A\",\n   \"product_type\": \"hotel\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 480.0,\n   \"vendor_booking_id\": \"LKE14A\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"TD-R39B\": {\n   \"created_at\": \"2026-10-25T09:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"details\": {\n    \"check_in\": \"2026-10-25\"\n   },\n   \"payment_id\": \"PM-R39B\",\n   \"platform_booking_id\": \"TD-R39B\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 560.0,\n   \"vendor_booking_id\": \"RNE14B\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  },\n  \"TD-R39C\": {\n   \"created_at\": \"2026-05-02T10:05:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"details\": {\n    \"check_in\": \"2026-11-02\",\n    \"legacy_system\": true\n   },\n   \"payment_id\": \"PM-R39C\",\n   \"platform_booking_id\": \"TD-R39C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 720.0,\n   \"vendor_booking_id\": \"RNE14C\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  },\n  \"TD-R39D\": {\n   \"created_at\": \"2026-05-02T09:55:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"details\": {\n    \"check_in\": \"2026-10-20\",\n    \"legacy_system\": true\n   },\n   \"payment_id\": \"PM-R39D\",\n   \"platform_booking_id\": \"TD-R39D\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 640.0,\n   \"vendor_booking_id\": \"HAE14D\",\n   \"vendor_id\": \"V-HILTON-ATLMID\"\n  },\n  \"TD-R39E\": {\n   \"created_at\": \"2026-05-02T10:02:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R39\",\n   \"details\": {\n    \"check_in\": \"2026-10-28\",\n    \"legacy_system\": true\n   },\n   \"payment_id\": \"PM-R39E\",\n   \"platform_booking_id\": \"TD-R39E\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 900.0,\n   \"vendor_booking_id\": \"BYE14E\",\n   \"vendor_id\": \"V-HTL-BAYSIDE\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-HILTON-ATLMID|HAE14D\": {\n   \"data\": {\n    \"check_in\": \"2026-10-20\",\n    \"check_out\": \"2026-10-24\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-19T15:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 160.0,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R39D\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"HAE14D\",\n   \"vendor_id\": \"V-HILTON-ATLMID\"\n  },\n  \"V-HTL-BAYSIDE|BYE14E\": {\n   \"data\": {\n    \"check_in\": \"2026-10-28\",\n    \"check_out\": \"2026-11-02\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-27T15:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 180.0,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R39E\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"BYE14E\",\n   \"vendor_id\": \"V-HTL-BAYSIDE\"\n  },\n  \"V-HTL-LAKESIDE|LKE14A\": {\n   \"data\": {\n    \"check_in\": \"2026-10-24\",\n    \"check_out\": \"2026-10-27\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-17T15:00:00-05:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 480.0,\n     \"rule_id\": \"SC-LAKESIDE-1\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R39A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"LKE14A\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-HTL-RIVERNORTH|RNE14B\": {\n   \"data\": {\n    \"check_in\": \"2026-10-25\",\n    \"check_out\": \"2026-10-28\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-18T15:00:00-05:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 560.0,\n     \"rule_id\": \"SC-RIVERNORTH\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R39B\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"RNE14B\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  },\n  \"V-HTL-RIVERNORTH|RNE14C\": {\n   \"data\": {\n    \"check_in\": \"2026-11-02\",\n    \"check_out\": \"2026-11-05\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-26T15:00:00-05:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 240.0,\n     \"rule_id\": \"SC-RIVERNORTH\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R39C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"RNE14C\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "ae001e18769d40b2f8139fba882f3d6a\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/39_hotel_shut_by_fire_legacy_credit\"\ndescription = \"Lakeside reservation -> booking (legacy system, property closure misrecorded as late cancel) -> reclassify supplier_fault -> quote (no penalty) -> legacy refund to wallet credit as the customer allowed; River North stay -> relocation claim to Lakeside for the USD 80 difference.\"\nkeywords = [\"vendor contract\"]\n\n[metadata]\nwalk = \"39_hotel_shut_by_fire_legacy_credit__right\"\nchain = \"Lakeside reservation -> booking (legacy system, property closure misrecorded as late cancel) -> reclassify supplier_fault -> quote (no penalty) -> legacy refund to wallet credit as the customer allowed; River North stay -> relocation claim to Lakeside for the USD 80 difference.\"\npersona = \"family of five, 17-day trip\"\nregimes = [\"vendor contract\"]\nvendors = [\"V-HTL-LAKESIDE\", \"V-HTL-RIVERNORTH\"]\nvendors_written = [\"V-HTL-LAKESIDE\"]\ntrap_families = [\"conditional\", \"history\", \"identity\", \"liability\"]\ntraps = [\"cancel_next_hotel\", \"reclassify_as_customer\", \"refund_difference_ourselves\", \"refund_to_card_new_endpoint\"]\ncode_guards_on_route = [\"CV-REASON\", \"IP-1\", \"IP-15\", \"IP-1b\", \"SC-LAKESIDE-1\", \"SC-LAKESIDE-2\"]\njudge_items_on_route = [\"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-RAIL-EXCHANGE\", \"GP-VENDOR-REPLY\", \"INS-INSURER\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-DOT-NODELAY\", \"P-LIAB-3\", \"TP-NOT-TRIPDESK\", \"WC-ES-CARE\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/Hilton/comments/1vx8552/how_would_you_handle_this_situation_long_but/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "LKE14A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "LKE14A",
+     "card_last4": "6414",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "brian.kowalczyk@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "confirmation": "LKE14A",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "cause": "supplier_fault",
+     "evidence": "Building closed by the fire department on arrival; the guests never cancelled.",
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "reclassify_cancellation"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$5.refundable",
+     "currency": "USD",
+     "platform_booking_id": "$2.platform_booking_id",
+     "reason_code": "customer_cancel_free"
+    },
+    "name": "issue_refund_legacy"
+   },
+   {
+    "args": {
+     "amount": 80.0,
+     "currency": "USD",
+     "message": "Supplier fault: family relocated to River North RNE14B at USD 560 against USD 480 booked; difference USD 80.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "relocation_claim",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "text": "The Lakeside closure was recorded as the property's fault, not a late cancel, and USD 480 for LKE14A was refunded to your wallet credit. The USD 80 extra for River North is not refunded to you now; I filed a USD 80 relocation claim with Lakeside Inn for it."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

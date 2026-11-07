@@ -1,0 +1,434 @@
+{
+ "alts": {
+  "promise_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DB-R15A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DB-R15A",
+      "card_last4": "5616",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "lena.fischer@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R15B",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "amount": "$5.total",
+      "currency": "EUR",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R15A",
+      "queue": "supplier_relations",
+      "summary": "DB staff promised the taxi Dusseldorf to Dortmund on receipt; Uber trip UB-R15B."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R15A",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$7.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$8.amount",
+      "currency": "EUR",
+      "message": "EU rail claim: ICE 9417 on 2026-09-26 reached Dortmund 95 minutes late.",
+      "platform_booking_id": "$7.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-DB"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$9.thread_id"
+     },
+     "name": "vendor_check"
+    }
+   ]
+  },
+  "threads_read.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DB-R15A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DB-R15A",
+      "card_last4": "5616",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "lena.fischer@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R15A",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "vendor_list_threads"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$4.amount",
+      "currency": "EUR",
+      "message": "EU rail claim: ICE 9417 on 2026-09-26 reached Dortmund 95 minutes late by taxi after terminating early.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-DB"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$5.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R15B",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$8.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "amount": "$9.total",
+      "currency": "EUR",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$2.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "DB staff promised the taxi Dusseldorf to Dortmund on receipt; Uber trip UB-R15B."
+     },
+     "name": "escalate"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a claim or request was sent to a supplier": [
+    "vendor_threads VT-R15D, 12.48 EUR, dated 2026-09-20, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 92.0,
+      "commitment_id": null,
+      "currency": "EUR",
+      "customer_id": "C-R15",
+      "owner": "Supplier relations",
+      "platform_booking_id": "TD-R15A",
+      "queue": "supplier_relations",
+      "sla_hours": 72
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R15"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 22.25,
+      "currency": "EUR",
+      "platform_booking_id": "TD-R15A",
+      "reply_status": "approved",
+      "reply_text": "Fahrgastrechte claim approved. DB pays the passenger by bank transfer.",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-DB"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that a delay compensation claim of 22.25 EUR (25 percent of the 89 EUR fare for a 95 minute late arrival) was filed with DB and that DB pays it. (met = 1: In its replies to the customer, does the agent do this: States that a delay compensation claim of 22.25 EUR (25 percent of the 89 EUR fare for a 95 minute late arrival) was filed with DB and that DB pays it.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that the 92 EUR Uber fare (the trip's total) was escalated to supplier relations against the DB booking DB-R15A under DB's staff promise, and that it is pending there, not refunded by TripDesk now. (met = 1: In its replies to the customer, does the agent do this: States that the 92 EUR Uber fare (the trip's total) was escalated to supplier relations against the DB booking DB-R15A under DB's staff promise, and that it is pending there, not refunded by TripDesk now.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   }
+  ],
+  "message": "My train from Paris to Dortmund (DB-R15A) ended in Dusseldorf because of a German IT problem. The DB staff told us to take a taxi to Dortmund and that the fare would be refunded with the receipt. I took an Uber through your app and sent the claim a month ago, nothing. I'd like the taxi money and any delay compensation. Last month's claim for my Cologne trip was paid, so I know it works. lena.fischer@example.com, card 5616.",
+  "strict_tables": [],
+  "task": "15_train_terminated_staff_taxi_promise",
+  "token": "d80fd78071c478c6d9edffa79009b1a5"
+ },
+ "instruction": "My train from Paris to Dortmund (DB-R15A) ended in Dusseldorf because of a German IT problem. The DB staff told us to take a taxi to Dortmund and that the fare would be refunded with the receipt. I took an Uber through your app and sent the claim a month ago, nothing. I'd like the taxi money and any delay compensation. Last month's claim for my Cologne trip was paid, so I know it works. lena.fischer@example.com, card 5616.\n",
+ "overlay": "{\n \"contact_history\": {\n  \"CT-R15A\": {\n   \"actor\": \"db_train_staff\",\n   \"channel\": \"onboard\",\n   \"contact_id\": \"CT-R15A\",\n   \"customer_id\": \"C-R15\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R15A\",\n   \"text\": \"Train ends here. Take a taxi to Dortmund; DB refunds the fare on receipt.\",\n   \"ts\": \"2026-09-26T15:05:00+02:00\"\n  },\n  \"CT-R15B\": {\n   \"actor\": \"customer\",\n   \"channel\": \"app\",\n   \"contact_id\": \"CT-R15B\",\n   \"customer_id\": \"C-R15\",\n   \"direction\": \"outbound\",\n   \"outcome\": \"no_reply\",\n   \"platform_booking_id\": \"TD-R15A\",\n   \"text\": \"Customer sent the Uber receipt to DB as the staff promised; no reply from DB.\",\n   \"ts\": \"2026-10-01T10:00:00+02:00\"\n  }\n },\n \"customers\": {\n  \"C-R15\": {\n   \"customer_id\": \"C-R15\",\n   \"email\": \"lena.fischer@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Lena Fischer\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R15A\": {\n   \"amount\": 89.0,\n   \"card_last4\": \"5616\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R15\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R15A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R15B\": {\n   \"amount\": 92.0,\n   \"card_last4\": \"5616\",\n   \"created_at\": \"2026-09-26T16:10:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R15\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R15B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R15D\": {\n   \"amount\": 49.9,\n   \"card_last4\": \"5616\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R15\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R15D\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R15A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R15\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R15A\",\n   \"platform_booking_id\": \"TD-R15A\",\n   \"product_type\": \"rail\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 89.0,\n   \"vendor_booking_id\": \"DB-R15A\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"TD-R15B\": {\n   \"created_at\": \"2026-09-26T16:10:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R15\",\n   \"details\": {},\n   \"payment_id\": \"PM-R15B\",\n   \"platform_booking_id\": \"TD-R15B\",\n   \"product_type\": \"ride\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 92.0,\n   \"vendor_booking_id\": \"UB-R15B\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"TD-R15D\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R15\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R15D\",\n   \"platform_booking_id\": \"TD-R15D\",\n   \"product_type\": \"rail\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 49.9,\n   \"vendor_booking_id\": \"DB-R15D\",\n   \"vendor_id\": \"V-DB\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DB|DB-R15A\": {\n   \"data\": {\n    \"date\": \"2026-09-26\",\n    \"delay_min\": 95,\n    \"dep\": \"2026-09-26T09:55:00+02:00\",\n    \"fare_class\": \"Flexpreis\",\n    \"from\": \"PNO\",\n    \"region\": \"EU\",\n    \"terminated_at\": \"Dusseldorf Hbf\",\n    \"to\": \"EDO\",\n    \"train\": \"ICE 9417\"\n   },\n   \"platform_booking_id\": \"TD-R15A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DB-R15A\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-DB|DB-R15D\": {\n   \"data\": {\n    \"date\": \"2026-09-05\",\n    \"delay_min\": 70,\n    \"dep\": \"2026-09-05T08:10:00+02:00\",\n    \"fare_class\": \"Sparpreis\",\n    \"from\": \"KK\",\n    \"region\": \"EU\",\n    \"to\": \"FF\",\n    \"train\": \"ICE 1012\"\n   },\n   \"platform_booking_id\": \"TD-R15D\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DB-R15D\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-UBER|UB-R15B\": {\n   \"data\": {\n    \"dropoff\": \"Dortmund Hbf\",\n    \"ended_at\": \"2026-09-26T16:10:00+02:00\",\n    \"fare_lines\": [\n     {\n      \"amount\": 88.0,\n      \"type\": \"trip\"\n     },\n     {\n      \"amount\": 4.0,\n      \"type\": \"booking_fee\"\n     }\n    ],\n    \"kind\": \"on_demand\",\n    \"pickup\": \"Dusseldorf Hbf\",\n    \"requested_at\": \"2026-09-26T15:20:00+02:00\"\n   },\n   \"platform_booking_id\": \"TD-R15B\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"UB-R15B\",\n   \"vendor_id\": \"V-UBER\"\n  }\n },\n \"vendor_threads\": {\n  \"VT-R15D\": {\n   \"amount\": 12.48,\n   \"currency\": \"EUR\",\n   \"message\": \"Delay claim 70 minutes\",\n   \"platform_booking_id\": \"TD-R15D\",\n   \"reply_at\": \"2026-09-20T10:00:00+02:00\",\n   \"reply_status\": \"approved\",\n   \"reply_text\": \"Fahrgastrechte claim approved. DB pays the passenger by bank transfer.\",\n   \"request_type\": \"compensation_claim\",\n   \"sent_at\": \"2026-09-20T10:00:00+02:00\",\n   \"thread_id\": \"VT-R15D\",\n   \"vendor_id\": \"V-DB\"\n  }\n }\n}\n",
+ "places": {
+  "PL-449154A8": {
+   "aliases": [
+    "dortmund hbf"
+   ],
+   "text": "Dortmund Hbf"
+  },
+  "PL-576CC982": {
+   "aliases": [
+    "dusseldorf hbf"
+   ],
+   "text": "Dusseldorf Hbf"
+  }
+ },
+ "secret": "d80fd78071c478c6d9edffa79009b1a5\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/15_train_terminated_staff_taxi_promise\"\ndescription = \"DB booking -> compute_entitlement (25 percent) -> DB compensation claim; contact history shows the DB staff promise -> the Uber trip's total (EUR 92, no receipt document) -> supplier relations escalation on the DB booking the row names for that amount (IP-9c, IP-9d).\"\nkeywords = [\"EU rail\"]\n\n[metadata]\nwalk = \"15_train_terminated_staff_taxi_promise__right\"\nchain = \"DB booking -> compute_entitlement (25 percent) -> DB compensation claim; contact history shows the DB staff promise -> the Uber trip's total (EUR 92, no receipt document) -> supplier relations escalation on the DB booking the row names for that amount (IP-9c, IP-9d).\"\npersona = \"solo traveller\"\nregimes = [\"EU rail\"]\nvendors = [\"V-DB\", \"V-UBER\"]\nvendors_written = [\"V-DB\"]\ntrap_families = [\"history\", \"liability\", \"restraint\"]\ntraps = [\"claim_cologne_again\", \"claim_half_fare\", \"pay_taxi_ourselves\"]\ncode_guards_on_route = [\"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9c\", \"IP-9e\"]\njudge_items_on_route = [\"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-VENDOR-REPLY\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"WC-ES-CARE\", \"claims\", \"reply.1\", \"reply.2\"]\ncomplaint = \"https://www.reddit.com/r/Eurostar/comments/1up5ryt/eurostar_refund/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DB-R15A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DB-R15A",
+     "card_last4": "5616",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "lena.fischer@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "reservation_number": "DB-R15A",
+     "vendor_id": "V-DB"
+    },
+    "name": "rail_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "amount": "$3.amount",
+     "currency": "EUR",
+     "message": "EU rail claim: ICE 9417 on 2026-09-26 reached Dortmund 95 minutes late by taxi after terminating early.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "compensation_claim",
+     "vendor_id": "V-DB"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$4.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_contact_history"
+   },
+   {
+    "args": {
+     "ride_id": "UB-R15B",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_get_scheduled"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$7.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "amount": "$8.total",
+     "currency": "EUR",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "$2.platform_booking_id",
+     "queue": "supplier_relations",
+     "summary": "DB staff promised the taxi Dusseldorf to Dortmund on receipt; Uber trip UB-R15B."
+    },
+    "name": "escalate"
+   }
+  ]
+ }
+}

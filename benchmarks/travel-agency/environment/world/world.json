@@ -1,0 +1,35 @@
+{
+ "db_class": "DomainDB",
+ "place_args": [
+  "dropoff",
+  "pickup"
+ ],
+ "reply_tool": "reply_to_user",
+ "tools_class": "DomainTools",
+ "writes": [
+  "add_note",
+  "car_cancel",
+  "car_change",
+  "car_dispute_charge",
+  "card_benefit_file_claim",
+  "cruise_cancel",
+  "escalate",
+  "flight_cancel",
+  "flight_change",
+  "flight_reroute",
+  "hotel_add_note",
+  "hotel_cancel",
+  "insurance_cancel",
+  "insurance_file_claim",
+  "issue_refund",
+  "issue_refund_legacy",
+  "rail_cancel",
+  "rail_change",
+  "reclassify_cancellation",
+  "respond_chargeback",
+  "ride_cancel_scheduled",
+  "ride_schedule",
+  "vendor_send",
+  "verify_identity"
+ ]
+}

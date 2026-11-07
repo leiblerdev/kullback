@@ -1,0 +1,946 @@
+{
+ "alts": {
+  "care_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "FRR74A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "FRR74A",
+      "card_last4": "4808",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "chloe.martin@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "FRR74A",
+      "vendor_id": "V-FR"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_chargebacks"
+    },
+    {
+     "args": {
+      "chargeback_id": "$3.chargebacks.0.chargeback_id",
+      "decision": "accept"
+     },
+     "name": "respond_chargeback"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; chargeback accepted.",
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$4.amount",
+      "currency": "EUR",
+      "message": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; TripDesk accepted chargeback CB-R74 for EUR 164.00 on the carrier's failure.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "chargeback_recovery",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_care"
+    },
+    {
+     "args": {
+      "amount": "$7.claimable",
+      "currency": "EUR",
+      "message": "EU261 Art 9 care not given at AGP after the 26 Oct cancellation: meal receipt DOC-R74A.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "care_expense_claim",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$8.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "amount": "$7.claimable",
+      "currency": "EUR",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$2.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "Ryanair refused the EUR 48 meal care claim DOC-R74A for FRR74A; care is owed after a cancellation whatever its cause."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$11.amount",
+      "currency": "EUR",
+      "message": "EU261 Art 7: FR6211 AGP-BCN cancelled on the day for a technical fault, not extraordinary.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$12.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R74B",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "DLR74C",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Four passengers missed DL8411 BCN-LAX on 26 Oct after a separate Ryanair cancellation; they ask a no-show waiver.",
+      "platform_booking_id": "$15.platform_booking_id",
+      "request_type": "waiver_request",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$16.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "text": "I am sorry, this has been a long and frustrating trip. Your Mastercard dispute on the Ryanair ticket FRR74A was accepted, so the EUR 164 comes back through the card network. The EUR 1000 EU261 compensation (EUR 250 for each of the 4 passengers) has been claimed from Ryanair and has not been paid. The EUR 48 meal receipt DOC-R74A was claimed from Ryanair as care; it is unpaid, and I escalated it to supplier relations. The EUR 58 duty free receipt DOC-R74B is not claimed, since it is not care. Nothing is paid back for the night train DB-R74B: DB refunds nothing, since the train ran with no delay, and its cost is not claimed from Ryanair, since the Ryanair ticket already comes back through your card dispute. I asked Delta to waive the no-show on DLR74C, and no waiver has been granted."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "delta_before_ryanair.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "FRR74A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "FRR74A",
+      "card_last4": "4808",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "chloe.martin@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R74B",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "DLR74C",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Four passengers missed DL8411 BCN-LAX on 26 Oct after a separate Ryanair cancellation; they ask a no-show waiver.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "waiver_request",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$4.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "record_locator": "FRR74A",
+      "vendor_id": "V-FR"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_chargebacks"
+    },
+    {
+     "args": {
+      "chargeback_id": "$7.chargebacks.0.chargeback_id",
+      "decision": "accept"
+     },
+     "name": "respond_chargeback"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; chargeback accepted.",
+      "platform_booking_id": "$6.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$8.amount",
+      "currency": "EUR",
+      "message": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; TripDesk accepted chargeback CB-R74 for EUR 164.00 on the carrier's failure.",
+      "platform_booking_id": "$6.platform_booking_id",
+      "request_type": "chargeback_recovery",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$6.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$11.amount",
+      "currency": "EUR",
+      "message": "EU261 Art 7: FR6211 AGP-BCN cancelled on the day for a technical fault, not extraordinary.",
+      "platform_booking_id": "$6.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$12.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$6.platform_booking_id"
+     },
+     "name": "compute_care"
+    },
+    {
+     "args": {
+      "amount": "$14.claimable",
+      "currency": "EUR",
+      "message": "EU261 Art 9 care not given at AGP after the 26 Oct cancellation: meal receipt DOC-R74A.",
+      "platform_booking_id": "$6.platform_booking_id",
+      "request_type": "care_expense_claim",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$15.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "amount": "$14.claimable",
+      "currency": "EUR",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$6.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "Ryanair refused the EUR 48 meal care claim DOC-R74A for FRR74A; care is owed after a cancellation whatever its cause."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "I am sorry, this has been a long and frustrating trip. Your Mastercard dispute on the Ryanair ticket FRR74A was accepted, so the EUR 164 comes back through the card network. The EUR 1000 EU261 compensation (EUR 250 for each of the 4 passengers) has been claimed from Ryanair and has not been paid. The EUR 48 meal receipt DOC-R74A was claimed from Ryanair as care; it is unpaid, and I escalated it to supplier relations. The EUR 58 duty free receipt DOC-R74B is not claimed, since it is not care. Nothing is paid back for the night train DB-R74B: DB refunds nothing, since the train ran with no delay, and its cost is not claimed from Ryanair, since the Ryanair ticket already comes back through your card dispute. I asked Delta to waive the no-show on DLR74C, and no waiver has been granted."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "documents_read.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "FRR74A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "FRR74A",
+      "card_last4": "4808",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "chloe.martin@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "FRR74A",
+      "vendor_id": "V-FR"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_chargebacks"
+    },
+    {
+     "args": {
+      "chargeback_id": "$3.chargebacks.0.chargeback_id",
+      "decision": "accept"
+     },
+     "name": "respond_chargeback"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; chargeback accepted.",
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$4.amount",
+      "currency": "EUR",
+      "message": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; TripDesk accepted chargeback CB-R74 for EUR 164.00 on the carrier's failure.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "chargeback_recovery",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$7.amount",
+      "currency": "EUR",
+      "message": "EU261 Art 7: FR6211 AGP-BCN cancelled on the day for a technical fault, not extraordinary.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$8.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_care"
+    },
+    {
+     "args": {
+      "amount": "$10.claimable",
+      "currency": "EUR",
+      "message": "EU261 Art 9 care not given at AGP after the 26 Oct cancellation: meal receipt DOC-R74A.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "care_expense_claim",
+      "vendor_id": "V-FR"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$11.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "amount": "$10.claimable",
+      "currency": "EUR",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$2.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "Ryanair refused the EUR 48 meal care claim DOC-R74A for FRR74A; care is owed after a cancellation whatever its cause."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R74B",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "DLR74C",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Four passengers missed DL8411 BCN-LAX on 26 Oct after a separate Ryanair cancellation; they ask a no-show waiver.",
+      "platform_booking_id": "$15.platform_booking_id",
+      "request_type": "waiver_request",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$16.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "text": "I am sorry, this has been a long and frustrating trip. Your Mastercard dispute on the Ryanair ticket FRR74A was accepted, so the EUR 164 comes back through the card network. The EUR 1000 EU261 compensation (EUR 250 for each of the 4 passengers) has been claimed from Ryanair and has not been paid. The EUR 48 meal receipt DOC-R74A was claimed from Ryanair as care; it is unpaid, and I escalated it to supplier relations. The EUR 58 duty free receipt DOC-R74B is not claimed, since it is not care. Nothing is paid back for the night train DB-R74B: DB refunds nothing, since the train ran with no delay, and its cost is not claimed from Ryanair, since the Ryanair ticket already comes back through your card dispute. I asked Delta to waive the no-show on DLR74C, and no waiver has been granted."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R74A, cancelled, dated 2026-09-01, already on file before this conversation",
+    "vendor_bookings V-FR|FRR74A, cancelled, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "chargebacks": [
+    {
+     "cols": {
+      "responded_at": "2026-10-29T12:00:00-04:00",
+      "response": "accept",
+      "status": "accepted"
+     },
+     "key": "CB-R74",
+     "op": "change"
+    }
+   ],
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 48.0,
+      "commitment_id": null,
+      "currency": "EUR",
+      "customer_id": "C-R74",
+      "owner": "Supplier relations",
+      "platform_booking_id": "TD-R74A",
+      "queue": "supplier_relations",
+      "sla_hours": 72
+     }
+    }
+   ],
+   "payments": [
+    {
+     "cols": {
+      "dispute_status": "lost"
+     },
+     "key": "PM-R74A",
+     "op": "change"
+    }
+   ],
+   "platform_bookings": [
+    {
+     "cols": {
+      "details": {
+       "cancel_event": {
+        "at": "2026-10-26T15:40:00+01:00",
+        "by": "airline",
+        "cause": "supplier_fault"
+       },
+       "pax": 4,
+       "region": "EU"
+      }
+     },
+     "key": "TD-R74A",
+     "op": "change"
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 164.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "EUR",
+      "destination": "original_payment",
+      "payment_id": "PM-R74A",
+      "platform_booking_id": "TD-R74A",
+      "reason_code": "chargeback_accepted",
+      "source": "card_network",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R74"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 1000.0,
+      "currency": "EUR",
+      "platform_booking_id": "TD-R74A",
+      "reply_status": "refused",
+      "reply_text": "No compensation is due: the airline considers the cancellation to have been caused by an extraordinary circumstance beyond its control.",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-FR"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 164.0,
+      "currency": "EUR",
+      "platform_booking_id": "TD-R74A",
+      "reply_status": "approved",
+      "reply_text": "Accepted: the booking failed on our side, so the chargeback is ours. The amount is debited from our next settlement with TripDesk.",
+      "request_type": "chargeback_recovery",
+      "vendor_id": "V-FR"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 48.0,
+      "currency": "EUR",
+      "platform_booking_id": "TD-R74A",
+      "reply_status": "refused",
+      "reply_text": "We do not reimburse expenses for disruptions caused by extraordinary circumstances beyond the airline's control.",
+      "request_type": "care_expense_claim",
+      "vendor_id": "V-FR"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "platform_booking_id": "TD-R74C",
+      "reply_status": "refused",
+      "reply_text": "No waiver in effect for this flight.",
+      "request_type": "waiver_request",
+      "vendor_id": "V-DELTA"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-DOT-NODELAY] Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking? (met = 1: Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking?)",
+    "scope": [
+     "reclassify_cancellation"
+    ],
+    "tag": "P-DOT-NODELAY"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the Mastercard dispute on the Ryanair ticket FRR74A was accepted, so the EUR 164 comes back through the card network. (met = 1: In its replies to the customer, does the agent do this: Says the Mastercard dispute on the Ryanair ticket FRR74A was accepted, so the EUR 164 comes back through the card network.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says the EUR 1000 EU261 compensation (EUR 250 for each of 4 passengers) was claimed from Ryanair and has not been paid. (met = 1: In its replies to the customer, does the agent do this: Says the EUR 1000 EU261 compensation (EUR 250 for each of 4 passengers) was claimed from Ryanair and has not been paid.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says the EUR 48 meal receipt DOC-R74A was claimed from Ryanair as care, is unpaid, and was escalated to supplier relations. (met = 1: In its replies to the customer, does the agent do this: Says the EUR 48 meal receipt DOC-R74A was claimed from Ryanair as care, is unpaid, and was escalated to supplier relations.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says the EUR 58 duty free receipt DOC-R74B is not claimed. (met = 1: In its replies to the customer, does the agent do this: Says the EUR 58 duty free receipt DOC-R74B is not claimed.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: Says why the duty free receipt is not claimed: it is not care. (met = 1: In its replies to the customer, does the agent do this: Says why the duty free receipt is not claimed: it is not care.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   },
+   {
+    "checkpoint": "- [judge.reply.6] In its replies to the customer, does the agent do this: Says nothing is paid back for the night train DB-R74B: DB refunds nothing for it and its cost is not claimed from Ryanair. (met = 1: In its replies to the customer, does the agent do this: Says nothing is paid back for the night train DB-R74B: DB refunds nothing for it and its cost is not claimed from Ryanair.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.6"
+   },
+   {
+    "checkpoint": "- [judge.reply.7] In its replies to the customer, does the agent do this: Says the night train DB-R74B ran with no delay. (met = 1: In its replies to the customer, does the agent do this: Says the night train DB-R74B ran with no delay.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.7"
+   },
+   {
+    "checkpoint": "- [judge.reply.8] In its replies to the customer, does the agent do this: Says Delta was asked to waive the no-show on DLR74C and no waiver has been granted. (met = 1: In its replies to the customer, does the agent do this: Says Delta was asked to waive the no-show on DLR74C and no waiver has been granted.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.8"
+   }
+  ],
+  "message": "Ryanair delayed then cancelled our Malaga to Barcelona flight FRR74A (a part replacement) and now say it was beyond their control. We ate at the airport (receipts sent, the duty free one too), took the night train through you (DB-R74B) and missed our separate Delta flight to LA, DLR74C. I disputed the Ryanair ticket with Mastercard. Get us the compensation, the food and the train, and ask Delta to waive the no-show on that ticket. If Ryanair still will not pay the compensation, I will take that to the regulator myself, so you need not escalate the compensation. chloe.martin@example.com, 4808.",
+  "strict_tables": [],
+  "task": "74_ryanair_cancel_care_refused_dispute",
+  "token": "f82a763b4965f0fe61994bdb75677ace"
+ },
+ "instruction": "Ryanair delayed then cancelled our Malaga to Barcelona flight FRR74A (a part replacement) and now say it was beyond their control. We ate at the airport (receipts sent, the duty free one too), took the night train through you (DB-R74B) and missed our separate Delta flight to LA, DLR74C. I disputed the Ryanair ticket with Mastercard. Get us the compensation, the food and the train, and ask Delta to waive the no-show on that ticket. If Ryanair still will not pay the compensation, I will take that to the regulator myself, so you need not escalate the compensation. chloe.martin@example.com, 4808.\n",
+ "overlay": "{\n \"chargebacks\": {\n  \"CB-R74\": {\n   \"amount\": 164.0,\n   \"chargeback_id\": \"CB-R74\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R74\",\n   \"evidence\": null,\n   \"filed_at\": \"2026-10-28T09:00:00+01:00\",\n   \"network_id\": \"V-MASTERCARD\",\n   \"payment_id\": \"PM-R74A\",\n   \"platform_booking_id\": \"TD-R74A\",\n   \"reason_code\": \"4853\",\n   \"respond_by\": \"2026-12-12T09:00:00+01:00\",\n   \"responded_at\": null,\n   \"response\": null,\n   \"status\": \"open\"\n  }\n },\n \"customers\": {\n  \"C-R74\": {\n   \"customer_id\": \"C-R74\",\n   \"email\": \"chloe.martin@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Chloe Martin\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"documents\": {\n  \"DOC-R74A\": {\n   \"amount\": 48.0,\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R74\",\n   \"doc_id\": \"DOC-R74A\",\n   \"kind\": \"receipt\",\n   \"meta\": {\n    \"category\": \"meal\",\n    \"date\": \"2026-10-26\",\n    \"place\": \"AGP\"\n   },\n   \"platform_booking_id\": \"TD-R74A\",\n   \"received_at\": \"2026-10-27T09:00:00-04:00\",\n   \"received_via\": \"email\",\n   \"routed\": 0\n  },\n  \"DOC-R74B\": {\n   \"amount\": 58.0,\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R74\",\n   \"doc_id\": \"DOC-R74B\",\n   \"kind\": \"receipt\",\n   \"meta\": {\n    \"category\": \"souvenir\",\n    \"date\": \"2026-10-26\",\n    \"place\": \"AGP duty free\"\n   },\n   \"platform_booking_id\": \"TD-R74A\",\n   \"received_at\": \"2026-10-27T09:00:00-04:00\",\n   \"received_via\": \"email\",\n   \"routed\": 0\n  }\n },\n \"payments\": {\n  \"PM-R74A\": {\n   \"amount\": 164.0,\n   \"card_last4\": \"4808\",\n   \"created_at\": \"2026-09-01T10:00:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R74\",\n   \"dispute_status\": \"open\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R74A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R74B\": {\n   \"amount\": 236.0,\n   \"card_last4\": \"4808\",\n   \"created_at\": \"2026-10-26T17:00:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R74\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R74B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R74C\": {\n   \"amount\": 3480.0,\n   \"card_last4\": \"4808\",\n   \"created_at\": \"2026-09-01T10:20:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R74\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R74C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R74A\": {\n   \"created_at\": \"2026-09-01T10:00:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R74\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-26T15:40:00+01:00\",\n     \"by\": \"airline\",\n     \"cause\": \"part replacement\"\n    },\n    \"pax\": 4,\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R74A\",\n   \"platform_booking_id\": \"TD-R74A\",\n   \"product_type\": \"flight\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 164.0,\n   \"vendor_booking_id\": \"FRR74A\",\n   \"vendor_id\": \"V-FR\"\n  },\n  \"TD-R74B\": {\n   \"created_at\": \"2026-10-26T17:00:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R74\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R74B\",\n   \"platform_booking_id\": \"TD-R74B\",\n   \"product_type\": \"rail\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 236.0,\n   \"vendor_booking_id\": \"DB-R74B\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"TD-R74C\": {\n   \"created_at\": \"2026-09-01T10:20:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R74\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R74C\",\n   \"platform_booking_id\": \"TD-R74C\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 3480.0,\n   \"vendor_booking_id\": \"DLR74C\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DB|DB-R74B\": {\n   \"data\": {\n    \"date\": \"2026-10-26\",\n    \"delay_min\": 0,\n    \"dep\": \"2026-10-26T22:10:00+01:00\",\n    \"fare_class\": \"Flexpreis\",\n    \"from\": \"Malaga\",\n    \"region\": \"EU\",\n    \"to\": \"Barcelona Sants\",\n    \"train\": \"Trenhotel 922\"\n   },\n   \"platform_booking_id\": \"TD-R74B\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DB-R74B\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-DELTA|DLR74C\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 4,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-26T19:05:00-07:00\",\n      \"dep\": \"2026-10-26T16:10:00+01:00\",\n      \"flight\": \"DL8411\",\n      \"from\": \"BCN\",\n      \"to\": \"LAX\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R74C\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"DLR74C\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-FR|FRR74A\": {\n   \"data\": {\n    \"distance_km\": 770,\n    \"extraordinary\": false,\n    \"fare_class\": \"Regular\",\n    \"intra_eu\": true,\n    \"pax\": 4,\n    \"region\": \"EU\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-26T13:00:00+01:00\",\n      \"dep\": \"2026-10-26T11:30:00+01:00\",\n      \"flight\": \"FR6211\",\n      \"from\": \"AGP\",\n      \"to\": \"BCN\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R74A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"FRR74A\",\n   \"vendor_id\": \"V-FR\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "f82a763b4965f0fe61994bdb75677ace\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/74_ryanair_cancel_care_refused_dispute\"\ndescription = \"Ryanair booking read (cancelled for a part replacement) -> open Mastercard dispute on it -> accepted -> supplier fault recorded -> chargeback amount claimed from Ryanair with vendor_send chargeback_recovery -> entitlement: a technical fault is not extraordinary, 250 per passenger, 1000 for four -> claimed and refused (the customer takes that refusal to the regulator, so it is not escalated) -> care computed and claimed -> refused -> the care refusal escalated to supplier relations -> the night train they took read (travelled on time, nothing owed) -> Delta long haul missed: no-show waiver asked and refused.\"\nkeywords = [\"EU261\"]\n\n[metadata]\nwalk = \"74_ryanair_cancel_care_refused_dispute__right\"\nchain = \"Ryanair booking read (cancelled for a part replacement) -> open Mastercard dispute on it -> accepted -> supplier fault recorded -> chargeback amount claimed from Ryanair with vendor_send chargeback_recovery -> entitlement: a technical fault is not extraordinary, 250 per passenger, 1000 for four -> claimed and refused (the customer takes that refusal to the regulator, so it is not escalated) -> care computed and claimed -> refused -> the care refusal escalated to supplier relations -> the night train they took read (travelled on time, nothing owed) -> Delta long haul missed: no-show waiver asked and refused.\"\npersona = \"family\"\nregimes = [\"EU261\"]\nvendors = [\"V-DB\", \"V-DELTA\", \"V-FR\", \"V-MASTERCARD\"]\nvendors_written = [\"V-MASTERCARD\", \"V-FR\", \"V-DELTA\"]\ntrap_families = [\"conditional\", \"history\", \"liability\", \"restraint\"]\ntraps = [\"care_inside_compensation\", \"claim_duty_free\", \"contest_beyond_control\", \"escalate_compensation\", \"pay_care_ourselves\", \"refund_train\"]\ncode_guards_on_route = [\"CARE-CLAIM\", \"CARE-EXTRAORDINARY\", \"CB-EVIDENCE\", \"CB-RECOVER\", \"CB-VENDOR-FAULT\", \"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9e\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-VENDOR-REPLY\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"P-DOT-NODELAY\", \"WC-ES-CARE\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\", \"reply.6\", \"reply.7\", \"reply.8\"]\ncomplaint = \"https://www.reddit.com/r/Flights/comments/1d76tac/vueling_canceled_our_flight_and_wont_reimburse_us/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "FRR74A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "FRR74A",
+     "card_last4": "4808",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "chloe.martin@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "FRR74A",
+     "vendor_id": "V-FR"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_chargebacks"
+   },
+   {
+    "args": {
+     "chargeback_id": "$3.chargebacks.0.chargeback_id",
+     "decision": "accept"
+    },
+    "name": "respond_chargeback"
+   },
+   {
+    "args": {
+     "cause": "supplier_fault",
+     "evidence": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; chargeback accepted.",
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "reclassify_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$4.amount",
+     "currency": "EUR",
+     "message": "Ryanair cancelled FR6211 AGP-BCN on 26 Oct for a part replacement; TripDesk accepted chargeback CB-R74 for EUR 164.00 on the carrier's failure.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "chargeback_recovery",
+     "vendor_id": "V-FR"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "amount": "$7.amount",
+     "currency": "EUR",
+     "message": "EU261 Art 7: FR6211 AGP-BCN cancelled on the day for a technical fault, not extraordinary.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "compensation_claim",
+     "vendor_id": "V-FR"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$8.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_care"
+   },
+   {
+    "args": {
+     "amount": "$10.claimable",
+     "currency": "EUR",
+     "message": "EU261 Art 9 care not given at AGP after the 26 Oct cancellation: meal receipt DOC-R74A.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "care_expense_claim",
+     "vendor_id": "V-FR"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$11.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "amount": "$10.claimable",
+     "currency": "EUR",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "$2.platform_booking_id",
+     "queue": "supplier_relations",
+     "summary": "Ryanair refused the EUR 48 meal care claim DOC-R74A for FRR74A; care is owed after a cancellation whatever its cause."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "reservation_number": "DB-R74B",
+     "vendor_id": "V-DB"
+    },
+    "name": "rail_get_booking"
+   },
+   {
+    "args": {
+     "record_locator": "DLR74C",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "amount": 0.0,
+     "currency": "USD",
+     "message": "Four passengers missed DL8411 BCN-LAX on 26 Oct after a separate Ryanair cancellation; they ask a no-show waiver.",
+     "platform_booking_id": "$15.platform_booking_id",
+     "request_type": "waiver_request",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$16.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "text": "I am sorry, this has been a long and frustrating trip. Your Mastercard dispute on the Ryanair ticket FRR74A was accepted, so the EUR 164 comes back through the card network. The EUR 1000 EU261 compensation (EUR 250 for each of the 4 passengers) has been claimed from Ryanair and has not been paid. The EUR 48 meal receipt DOC-R74A was claimed from Ryanair as care; it is unpaid, and I escalated it to supplier relations. The EUR 58 duty free receipt DOC-R74B is not claimed, since it is not care. Nothing is paid back for the night train DB-R74B: DB refunds nothing, since the train ran with no delay, and its cost is not claimed from Ryanair, since the Ryanair ticket already comes back through your card dispute. I asked Delta to waive the no-show on DLR74C, and no waiver has been granted."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

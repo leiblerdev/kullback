@@ -1,0 +1,453 @@
+{
+ "alts": {
+  "ask_property_waiver.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR05A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR05A",
+      "card_last4": "4505",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "marco.bellini@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "LHR05A",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$3.amount",
+      "currency": "EUR",
+      "message": "EU261 claim: LH9420 JFK-FCO on 2026-09-13 arrived 400 minutes late; 6900 km.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$4.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-50512",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "amount": 2586.56,
+      "currency": "USD",
+      "message": "The brand desk advised the cancellation and promised no charge; please waive the USD 2,586.56.",
+      "platform_booking_id": "$6.platform_booking_id",
+      "request_type": "fee_waiver",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$8.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "amount": 2586.56,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "TD-R05B",
+      "queue": "supplier_relations",
+      "summary": "Hilton brand desk promised no charge and a check for USD 2,586.56 within 7 days."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "text": "Lufthansa approved EU261 compensation of 600 EUR for the 400-minute late arrival on your 6900 km flight, and Lufthansa pays it to you by bank transfer. The USD 2,586.56 Amalfi hotel charge is not refunded now. The Hilton diamond desk promised you would not be charged, so Hilton, not TripDesk, owes that money: I escalated it to our Supplier relations team (supplier_relations) to recover the USD 2,586.56 from Hilton, and they will contact you within 72 hours."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "promise_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR05A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR05A",
+      "card_last4": "4505",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "marco.bellini@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "confirmation": "AMF-50512",
+      "vendor_id": "V-AMALFI-PROP"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "amount": 2586.56,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$2.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "Hilton brand desk promised no charge and a check for USD 2,586.56 within 7 days."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "record_locator": "LHR05A",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$6.amount",
+      "currency": "EUR",
+      "message": "EU261 claim: LH9420 JFK-FCO on 2026-09-13 arrived 400 minutes late; 6900 km.",
+      "platform_booking_id": "$5.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$7.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "text": "Lufthansa approved EU261 compensation of 600 EUR for the 400-minute late arrival on your 6900 km flight, and Lufthansa pays it to you by bank transfer. The USD 2,586.56 Amalfi hotel charge is not refunded now. The Hilton diamond desk promised you would not be charged, so Hilton, not TripDesk, owes that money: I escalated it to our Supplier relations team (supplier_relations) to recover the USD 2,586.56 from Hilton, and they will contact you within 72 hours."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R05B, cancelled, dated 2026-09-01, already on file before this conversation"
+   ],
+   "a refund was issued to the customer": [
+    "refunds RF-R05D, 150 USD, paid, dated 2026-06-20, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 2586.56,
+      "commitment_id": null,
+      "currency": "USD",
+      "customer_id": "C-R05",
+      "owner": "Supplier relations",
+      "platform_booking_id": "TD-R05B",
+      "queue": "supplier_relations",
+      "sla_hours": 72
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R05"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 600.0,
+      "currency": "EUR",
+      "platform_booking_id": "TD-R05A",
+      "reply_status": "approved",
+      "reply_text": "Compensation approved. Lufthansa pays it to the passenger by bank transfer.",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that Lufthansa approved a 600 EUR compensation claim. (met = 1: In its replies to the customer, does the agent do this: States that Lufthansa approved a 600 EUR compensation claim.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that the compensation is EU261 compensation for the 400-minute arrival delay on the 6900 km flight. (met = 1: In its replies to the customer, does the agent do this: States that the compensation is EU261 compensation for the 400-minute arrival delay on the 6900 km flight.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: States that the USD 2,586.56 hotel charge is not refunded now. (met = 1: In its replies to the customer, does the agent do this: States that the USD 2,586.56 hotel charge is not refunded now.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: States that the USD 2,586.56 hotel charge was escalated to supplier relations to recover it from Hilton. (met = 1: In its replies to the customer, does the agent do this: States that the USD 2,586.56 hotel charge was escalated to supplier relations to recover it from Hilton.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: Explains that the Hilton desk made the promise not to charge, so Hilton, not TripDesk, owes the USD 2,586.56. (met = 1: In its replies to the customer, does the agent do this: Explains that the Hilton desk made the promise not to charge, so Hilton, not TripDesk, owes the USD 2,586.56.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   }
+  ],
+  "message": "My Lufthansa flight to Italy (LHR05A) was hours late so my fiancee got to the Amalfi hotel alone and they would not check her in. After two hours on the phone the Hilton diamond desk told me to cancel the reservation (AMF-50512) and promised me five times I would not be charged. Twenty minutes later I was charged $2,586.56. Another Hilton person said they would review the call and send me a check in 7 days. It has been 45 days. I want the $2,586.56 back and whatever Lufthansa owes me for the delay. marco.bellini@example.com, card 4505.",
+  "strict_tables": [],
+  "task": "05_brand_desk_promise_amalfi_and_lh_delay",
+  "token": "d30021bc2d555277bf949d78bb8c6b52"
+ },
+ "instruction": "My Lufthansa flight to Italy (LHR05A) was hours late so my fiancee got to the Amalfi hotel alone and they would not check her in. After two hours on the phone the Hilton diamond desk told me to cancel the reservation (AMF-50512) and promised me five times I would not be charged. Twenty minutes later I was charged $2,586.56. Another Hilton person said they would review the call and send me a check in 7 days. It has been 45 days. I want the $2,586.56 back and whatever Lufthansa owes me for the delay. marco.bellini@example.com, card 4505.\n",
+ "overlay": "{\n \"contact_history\": {\n  \"CT-R05B\": {\n   \"actor\": \"brand_diamond_desk\",\n   \"channel\": \"phone\",\n   \"contact_id\": \"CT-R05B\",\n   \"customer_id\": \"C-R05\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R05B\",\n   \"text\": \"Diamond desk: cancel the reservation; you will not be charged because of the flight delay.\",\n   \"ts\": \"2026-09-14T09:35:00+02:00\"\n  },\n  \"CT-R05C\": {\n   \"actor\": \"brand_guest_relations\",\n   \"channel\": \"phone\",\n   \"contact_id\": \"CT-R05C\",\n   \"customer_id\": \"C-R05\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R05B\",\n   \"text\": \"Follow-up on the diamond desk promise in CT-R05B: the case and the call recording are on file with the property; checks usually go out within 7 days.\",\n   \"ts\": \"2026-09-20T11:00:00-04:00\"\n  }\n },\n \"customers\": {\n  \"C-R05\": {\n   \"customer_id\": \"C-R05\",\n   \"email\": \"marco.bellini@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Marco Bellini\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R05A\": {\n   \"amount\": 940.0,\n   \"card_last4\": \"4505\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R05\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R05A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R05B\": {\n   \"amount\": 2586.56,\n   \"card_last4\": \"4505\",\n   \"created_at\": \"2026-09-14T10:00:00+02:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R05\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R05B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R05D\": {\n   \"amount\": 410.0,\n   \"card_last4\": \"4505\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R05\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R05D\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R05A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R05\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R05A\",\n   \"platform_booking_id\": \"TD-R05A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 940.0,\n   \"vendor_booking_id\": \"LHR05A\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"TD-R05B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R05\",\n   \"details\": {\n    \"cancel_event\": {\n     \"advised_by\": \"brand_diamond_desk\",\n     \"at\": \"2026-09-14T09:40:00+02:00\",\n     \"by\": \"customer\"\n    },\n    \"check_in\": \"2026-09-14\"\n   },\n   \"payment_id\": \"PM-R05B\",\n   \"platform_booking_id\": \"TD-R05B\",\n   \"product_type\": \"hotel\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 2586.56,\n   \"vendor_booking_id\": \"AMF-50512\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  },\n  \"TD-R05D\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R05\",\n   \"details\": {\n    \"check_in\": \"2026-06-02\"\n   },\n   \"payment_id\": \"PM-R05D\",\n   \"platform_booking_id\": \"TD-R05D\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 410.0,\n   \"vendor_booking_id\": \"AMF-41108\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  }\n },\n \"refunds\": {\n  \"RF-R05D\": {\n   \"amount\": 150.0,\n   \"created_at\": \"2026-06-20T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"destination\": \"original_payment\",\n   \"payment_id\": \"PM-R05D\",\n   \"platform_booking_id\": \"TD-R05D\",\n   \"reason_code\": \"smoking_fee_dispute\",\n   \"refund_id\": \"RF-R05D\",\n   \"source\": \"agent\",\n   \"state\": \"paid\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-AMALFI-PROP|AMF-41108\": {\n   \"data\": {\n    \"check_in\": \"2026-06-02\",\n    \"check_out\": \"2026-06-03\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-06-01T15:00:00+02:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 189.0,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R05D\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"AMF-41108\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  },\n  \"V-AMALFI-PROP|AMF-50512\": {\n   \"data\": {\n    \"check_in\": \"2026-09-14\",\n    \"check_out\": \"2026-09-15\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-09-13T15:00:00+02:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 2586.56,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R05B\",\n   \"status\": \"cancelled_charged\",\n   \"vendor_booking_id\": \"AMF-50512\",\n   \"vendor_id\": \"V-AMALFI-PROP\"\n  },\n  \"V-LH|LHR05A\": {\n   \"data\": {\n    \"arrival_delay_min\": 400,\n    \"distance_km\": 6900,\n    \"extraordinary\": false,\n    \"fare_class\": \"Light\",\n    \"intra_eu\": false,\n    \"pax\": 1,\n    \"region\": \"EU\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-09-14T07:30:00+02:00\",\n      \"dep\": \"2026-09-13T17:00:00-04:00\",\n      \"flight\": \"LH9420\",\n      \"from\": \"JFK\",\n      \"to\": \"FCO\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R05A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LHR05A\",\n   \"vendor_id\": \"V-LH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "d30021bc2d555277bf949d78bb8c6b52\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/05_brand_desk_promise_amalfi_and_lh_delay\"\ndescription = \"LH booking -> compute_entitlement -> LH compensation claim; Amalfi reservation and contact history -> the brand's promise of a check -> supplier relations for the USD 2,586.56 charged.\"\nkeywords = [\"EU261\"]\n\n[metadata]\nwalk = \"05_brand_desk_promise_amalfi_and_lh_delay__right\"\nchain = \"LH booking -> compute_entitlement -> LH compensation claim; Amalfi reservation and contact history -> the brand's promise of a check -> supplier relations for the USD 2,586.56 charged.\"\npersona = \"couple (writes for his fiancee's stay)\"\nregimes = [\"EU261\"]\nvendors = [\"V-AMALFI-PROP\", \"V-LH\"]\nvendors_written = [\"V-LH\", \"V-AMALFI-PROP\"]\ntrap_families = [\"history\", \"identity\", \"liability\"]\ntraps = [\"brand_promise_to_goodwill\", \"refund_charge_ourselves\", \"refund_june_stay\"]\ncode_guards_on_route = [\"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9e\"]\njudge_items_on_route = [\"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-VENDOR-REPLY\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"WC-ES-CARE\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\"]\ncomplaint = \"https://www.reddit.com/r/Hilton/comments/1me8xmk/hilton_promised_i_would_not_be_charged_then/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "LHR05A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "LHR05A",
+     "card_last4": "4505",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "marco.bellini@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "LHR05A",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "amount": "$3.amount",
+     "currency": "EUR",
+     "message": "EU261 claim: LH9420 JFK-FCO on 2026-09-13 arrived 400 minutes late; 6900 km.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "compensation_claim",
+     "vendor_id": "V-LH"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$4.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "confirmation": "AMF-50512",
+     "vendor_id": "V-AMALFI-PROP"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_contact_history"
+   },
+   {
+    "args": {
+     "amount": 2586.56,
+     "currency": "USD",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "TD-R05B",
+     "queue": "supplier_relations",
+     "summary": "Hilton brand desk promised no charge and a check for USD 2,586.56 within 7 days."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "text": "Lufthansa approved EU261 compensation of 600 EUR for the 400-minute late arrival on your 6900 km flight, and Lufthansa pays it to you by bank transfer. The USD 2,586.56 Amalfi hotel charge is not refunded now. The Hilton diamond desk promised you would not be charged, so Hilton, not TripDesk, owes that money: I escalated it to our Supplier relations team (supplier_relations) to recover the USD 2,586.56 from Hilton, and they will contact you within 72 hours."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

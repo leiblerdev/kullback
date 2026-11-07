@@ -1,0 +1,735 @@
+{
+ "alts": {
+  "status_read.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR75A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR75A",
+      "card_last4": "1357",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "diego.alvarez@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "flight": "DL2207",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_status"
+    },
+    {
+     "args": {
+      "record_locator": "DLR75A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$4.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$3.platform_booking_id",
+      "reason_code": "airline_cancelled"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R75B",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R75B",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$6.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$8.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$6.platform_booking_id",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "confirmation": "LKR75C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "LKR75C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$10.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$12.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$10.platform_booking_id",
+      "reason_code": "customer_cancel_free"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "confirmation": "RNR75D",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "RNR75D",
+      "text": "Guest drives down and arrives late on 30 Oct, after 22:00. Please hold the room.",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_add_note"
+    },
+    {
+     "args": {
+      "text": "Done. Your Delta flight DLR75A is refunded USD 214 to the original payment. The Hertz car HZ-R75B is cancelled; Hertz keeps a USD 100 cancellation fee, and USD 176 of the USD 276 you paid is refunded to the original payment. Tonight's Fort Lauderdale hotel LKR75C is cancelled free of charge, and USD 149 is refunded to the original payment. Your Key West reservation RNR75D stays booked, and I added a note on it that you arrive late on 30 October."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "stays_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR75A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR75A",
+      "card_last4": "1357",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "diego.alvarez@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "confirmation": "RNR75D",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "RNR75D",
+      "text": "Guest drives down and arrives late on 30 Oct, after 22:00. Please hold the room.",
+      "vendor_id": "V-HTL-RIVERNORTH"
+     },
+     "name": "hotel_add_note"
+    },
+    {
+     "args": {
+      "confirmation": "LKR75C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "LKR75C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$6.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$4.platform_booking_id",
+      "reason_code": "customer_cancel_free"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R75B",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R75B",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_cancel"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$8.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$10.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$8.platform_booking_id",
+      "reason_code": "customer_cancel"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "record_locator": "DLR75A",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$12.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$13.refundable",
+      "currency": "USD",
+      "destination": "original_payment",
+      "platform_booking_id": "$12.platform_booking_id",
+      "reason_code": "airline_cancelled"
+     },
+     "name": "issue_refund"
+    },
+    {
+     "args": {
+      "text": "Done. Your Delta flight DLR75A is refunded USD 214 to the original payment. The Hertz car HZ-R75B is cancelled; Hertz keeps a USD 100 cancellation fee, and USD 176 of the USD 276 you paid is refunded to the original payment. Tonight's Fort Lauderdale hotel LKR75C is cancelled free of charge, and USD 149 is refunded to the original payment. Your Key West reservation RNR75D stays booked, and I added a note on it that you arrive late on 30 October."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R75A, cancelled, dated 2026-10-01, already on file before this conversation",
+    "vendor_bookings V-DELTA|DLR75A, cancelled, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "platform_bookings": [
+    {
+     "cols": {
+      "details": {
+       "cancel_event": {
+        "at": "2026-10-29T12:00:00-04:00",
+        "by": "customer"
+       },
+       "region": "US"
+      },
+      "status": "cancelled"
+     },
+     "key": "TD-R75B",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "status": "cancelled"
+     },
+     "key": "TD-R75C",
+     "op": "change"
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 149.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R75C",
+      "platform_booking_id": "TD-R75C",
+      "reason_code": "customer_cancel_free",
+      "source": "agent",
+      "state": "paid"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 176.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R75B",
+      "platform_booking_id": "TD-R75B",
+      "reason_code": "customer_cancel",
+      "source": "agent",
+      "state": "paid"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "amount": 214.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R75A",
+      "platform_booking_id": "TD-R75A",
+      "reason_code": "airline_cancelled",
+      "source": "agent",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R75"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "cancellation": {
+        "at": "2026-10-29T12:00:00-04:00",
+        "by": "customer",
+        "currency": "USD",
+        "fee": 100.0,
+        "fee_billed_by_vendor": false,
+        "remaining_value": 176.0
+       },
+       "car_class": "Compact",
+       "currency": "USD",
+       "daily_rate": 69.0,
+       "deposit_hold": 200.0,
+       "flight": {
+        "date": "2026-10-29",
+        "flight": "DL2207",
+        "vendor_id": "V-DELTA"
+       },
+       "pickup_location": "FLL airport",
+       "pickup_time": "2026-10-29T14:00:00-04:00",
+       "rate_plan": "pay_now",
+       "return_location": "FLL airport",
+       "return_time": "2026-11-02T14:00:00-05:00",
+       "state": "FL"
+      },
+      "status": "cancelled"
+     },
+     "key": "V-HERTZ|HZ-R75B",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "data": {
+       "cancellation": {
+        "fee": 0.0
+       },
+       "check_in": "2026-10-29",
+       "check_out": "2026-10-30",
+       "city": "Fort Lauderdale",
+       "property_policy": {
+        "cancel_free_until": "2026-10-29T18:00:00-04:00",
+        "currency": "USD",
+        "late_cancel_fee_amount": 149.0,
+        "rule_id": "SC-LAKESIDE-1"
+       }
+      },
+      "status": "cancelled"
+     },
+     "key": "V-HTL-LAKESIDE|LKR75C",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "data": {
+       "check_in": "2026-10-30",
+       "check_out": "2026-11-02",
+       "city": "Key West",
+       "nightly_rate": 132.0,
+       "notes": true,
+       "property_policy": {
+        "cancel_free_until": "2026-10-23T15:00:00-04:00",
+        "currency": "USD",
+        "late_cancel_fee_amount": 132.0,
+        "rule_id": "SC-RIVERNORTH"
+       }
+      }
+     },
+     "key": "V-HTL-RIVERNORTH|RNR75D",
+     "op": "change",
+     "presence_only": true
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-LIAB-3] Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted? (met = 1: Does the agent follow this policy line: [MUST P-LIAB-3] TripDesk policy governs only TripDesk's own actions and money, and TripDesk never grants a vendor-side refund the vendor has not granted?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "P-LIAB-3"
+   },
+   {
+    "checkpoint": "- [judge.P-HOTEL-LAW] Does the agent follow this policy line: [SHOULD P-HOTEL-LAW] No statute here gives a refund when a hotel cancels; vendor contract and TripDesk policy govern that case? (met = 1: Does the agent follow this policy line: [SHOULD P-HOTEL-LAW] No statute here gives a refund when a hotel cancels; vendor contract and TripDesk policy govern that case?)",
+    "scope": [
+     "hotel_cancel"
+    ],
+    "tag": "P-HOTEL-LAW"
+   },
+   {
+    "checkpoint": "- [judge.P-HILTON-HOLD] Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note? (met = 1: Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note?)",
+    "scope": [
+     "hotel_add_note"
+    ],
+    "tag": "P-HILTON-HOLD"
+   },
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CV-CANCEL-STATUS] Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer? (met = 1: Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer?)",
+    "scope": [
+     "flight_cancel",
+     "hotel_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CV-CANCEL-STATUS"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.INS-INSURER] Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy? (met = 1: Does the agent follow this policy line: [MUST INS-INSURER] [V1] The insurer of a policy (insurer_id in insurance_policies) is never TripDesk: a premium is refunded only by insurance_cancel and a claim is paid only by the insurer through insurance_file_claim, and the agent never pays a premium or a claim with issue_refund or issue_refund_legacy?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "INS-INSURER"
+   },
+   {
+    "checkpoint": "- [judge.GP-RAIL-EXCHANGE] Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it? (met = 1: Does the agent follow this policy line: [MUST GP-RAIL-EXCHANGE] [synthetic] A passenger who accepted the operator's move to another train after a cancellation (exchanged_from on the reservation, exchange_accepted true) holds the new ticket: its own fare rules decide a later cancellation (CV-DB-FARE, CV-CANCEL-MONEY), and the cancelled train gives no refund right on it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "GP-RAIL-EXCHANGE"
+   },
+   {
+    "checkpoint": "- [judge.TP-NOT-TRIPDESK] Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it? (met = 1: Does the agent follow this policy line: [MUST TP-NOT-TRIPDESK] [synthetic] The agent never pays a card benefit claim or its denied amount with issue_refund or issue_refund_legacy, and never promises a claim outcome before card_benefit_file_claim gives it?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy"
+    ],
+    "tag": "TP-NOT-TRIPDESK"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.WC-U2-CANCEL] Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives? (met = 1: Does the agent follow this policy line: [MUST WC-U2-CANCEL] [V2] easyJet refunds a booking cancelled within a day of making it less a cancellation fee (30 GBP [synthetic], the free_cancel_fee in the vendor's fare_rules) and gives no refund after that: flight_cancel returns no value outside the window, and issue_refund pays only the refundable amount quote_cancellation gives?)",
+    "scope": [
+     "flight_cancel",
+     "issue_refund"
+    ],
+    "tag": "WC-U2-CANCEL"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the cancelled Delta flight DLR75A is refunded USD 214 to the original payment. (met = 1: In its replies to the customer, does the agent do this: Says the cancelled Delta flight DLR75A is refunded USD 214 to the original payment.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says the Hertz car HZ-R75B is cancelled, Hertz keeps a USD 100 cancellation fee, and USD 176 of the USD 276 paid is refunded to the original payment. (met = 1: In its replies to the customer, does the agent do this: Says the Hertz car HZ-R75B is cancelled, Hertz keeps a USD 100 cancellation fee, and USD 176 of the USD 276 paid is refunded to the original payment.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says the Fort Lauderdale hotel LKR75C is cancelled free and USD 149 is refunded to the original payment. (met = 1: In its replies to the customer, does the agent do this: Says the Fort Lauderdale hotel LKR75C is cancelled free and USD 149 is refunded to the original payment.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says the Key West reservation RNR75D stays booked and the hotel was told that the guest arrives late on 30 October. (met = 1: In its replies to the customer, does the agent do this: Says the Key West reservation RNR75D stays booked and the hotel was told that the guest arrives late on 30 October.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "Delta cancelled my 9:30 to Fort Lauderdale this morning (DLR75A); I will drive down tomorrow instead. Refund the flight. Cancel the Hertz car HZ-R75B, even if Hertz keeps its late cancel fee of up to 100 dollars, and tonight's Fort Lauderdale hotel LKR75C, and refund what you can on both. Keep Key West (RNR75D) and tell them I will get there late tomorrow night. diego.alvarez@example.com, 1357.",
+  "strict_tables": [],
+  "task": "75_delta_cancel_morning_car_hotels",
+  "token": "91c03c996d760907f9aeda138fb11ea0"
+ },
+ "instruction": "Delta cancelled my 9:30 to Fort Lauderdale this morning (DLR75A); I will drive down tomorrow instead. Refund the flight. Cancel the Hertz car HZ-R75B, even if Hertz keeps its late cancel fee of up to 100 dollars, and tonight's Fort Lauderdale hotel LKR75C, and refund what you can on both. Keep Key West (RNR75D) and tell them I will get there late tomorrow night. diego.alvarez@example.com, 1357.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R75\": {\n   \"customer_id\": \"C-R75\",\n   \"email\": \"diego.alvarez@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Diego Alvarez\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R75A\": {\n   \"amount\": 214.0,\n   \"card_last4\": \"1357\",\n   \"created_at\": \"2026-10-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R75A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R75B\": {\n   \"amount\": 276.0,\n   \"card_last4\": \"1357\",\n   \"created_at\": \"2026-10-01T10:10:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R75B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R75C\": {\n   \"amount\": 149.0,\n   \"card_last4\": \"1357\",\n   \"created_at\": \"2026-10-01T10:20:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R75C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R75D\": {\n   \"amount\": 396.0,\n   \"card_last4\": \"1357\",\n   \"created_at\": \"2026-10-01T10:30:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R75D\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R75A\": {\n   \"created_at\": \"2026-10-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-29T06:10:00-04:00\",\n     \"by\": \"airline\",\n     \"cause\": \"crew\"\n    },\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R75A\",\n   \"platform_booking_id\": \"TD-R75A\",\n   \"product_type\": \"flight\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 214.0,\n   \"vendor_booking_id\": \"DLR75A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R75B\": {\n   \"created_at\": \"2026-10-01T10:10:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R75B\",\n   \"platform_booking_id\": \"TD-R75B\",\n   \"product_type\": \"car\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 276.0,\n   \"vendor_booking_id\": \"HZ-R75B\",\n   \"vendor_id\": \"V-HERTZ\"\n  },\n  \"TD-R75C\": {\n   \"created_at\": \"2026-10-01T10:20:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R75C\",\n   \"platform_booking_id\": \"TD-R75C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 149.0,\n   \"vendor_booking_id\": \"LKR75C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"TD-R75D\": {\n   \"created_at\": \"2026-10-01T10:30:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R75\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R75D\",\n   \"platform_booking_id\": \"TD-R75D\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 396.0,\n   \"vendor_booking_id\": \"RNR75D\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR75A\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T12:25:00-04:00\",\n      \"dep\": \"2026-10-29T09:30:00-04:00\",\n      \"flight\": \"DL2207\",\n      \"from\": \"DTW\",\n      \"to\": \"FLL\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R75A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"DLR75A\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-HERTZ|HZ-R75B\": {\n   \"data\": {\n    \"car_class\": \"Compact\",\n    \"currency\": \"USD\",\n    \"daily_rate\": 69.0,\n    \"deposit_hold\": 200.0,\n    \"flight\": {\n     \"date\": \"2026-10-29\",\n     \"flight\": \"DL2207\",\n     \"vendor_id\": \"V-DELTA\"\n    },\n    \"pickup_location\": \"FLL airport\",\n    \"pickup_time\": \"2026-10-29T14:00:00-04:00\",\n    \"rate_plan\": \"pay_now\",\n    \"return_location\": \"FLL airport\",\n    \"return_time\": \"2026-11-02T14:00:00-05:00\",\n    \"state\": \"FL\"\n   },\n   \"platform_booking_id\": \"TD-R75B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"HZ-R75B\",\n   \"vendor_id\": \"V-HERTZ\"\n  },\n  \"V-HTL-LAKESIDE|LKR75C\": {\n   \"data\": {\n    \"check_in\": \"2026-10-29\",\n    \"check_out\": \"2026-10-30\",\n    \"city\": \"Fort Lauderdale\",\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-29T18:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 149.0,\n     \"rule_id\": \"SC-LAKESIDE-1\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R75C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"LKR75C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-HTL-RIVERNORTH|RNR75D\": {\n   \"data\": {\n    \"check_in\": \"2026-10-30\",\n    \"check_out\": \"2026-11-02\",\n    \"city\": \"Key West\",\n    \"nightly_rate\": 132.0,\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-23T15:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 132.0,\n     \"rule_id\": \"SC-RIVERNORTH\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R75D\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"RNR75D\",\n   \"vendor_id\": \"V-HTL-RIVERNORTH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "91c03c996d760907f9aeda138fb11ea0\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/75_delta_cancel_morning_car_hotels\"\ndescription = \"Delta booking read (cancelled this morning) -> quote and cash refund -> Hertz car cancelled inside 24 hours (the 100 fee kept, authorized in the message) -> quote and refund of the rest -> tonight's Lakeside room cancelled free and refunded -> the Key West hotel kept and told of the later arrival (asked).\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"75_delta_cancel_morning_car_hotels__right\"\nchain = \"Delta booking read (cancelled this morning) -> quote and cash refund -> Hertz car cancelled inside 24 hours (the 100 fee kept, authorized in the message) -> quote and refund of the rest -> tonight's Lakeside room cancelled free and refunded -> the Key West hotel kept and told of the later arrival (asked).\"\npersona = \"solo\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-HERTZ\", \"V-HTL-LAKESIDE\", \"V-HTL-RIVERNORTH\"]\nvendors_written = [\"V-DELTA\", \"V-HERTZ\", \"V-HTL-LAKESIDE\", \"V-HTL-RIVERNORTH\"]\ntrap_families = [\"conditional\", \"liability\", \"restraint\", \"time\"]\ntraps = [\"cancel_key_west\", \"car_fee_outside_window\", \"move_car_pickup\", \"refund_car_in_full\"]\ncode_guards_on_route = [\"CR-CAR-CANCEL\", \"CR-HERTZ-CANCEL\", \"CV-REASON\", \"IP-1\", \"IP-15\", \"IP-1b\", \"P-DOT-AGENT\", \"P-DOT-CASH\", \"P-DOT-REFUND\", \"P-HILTON\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-MSC-NAME\", \"CV-CANCEL-STATUS\", \"CV-LOST-ITEM\", \"GP-RAIL-EXCHANGE\", \"INS-INSURER\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-HILTON-HOLD\", \"P-HOTEL-LAW\", \"P-LIAB-3\", \"TP-NOT-TRIPDESK\", \"WC-U2-CANCEL\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/travel/comments/1pmm7p9/welp_spirit_airlines_canceled_my_holiday_travel/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLR75A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLR75A",
+     "card_last4": "1357",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "diego.alvarez@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "DLR75A",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$3.refundable",
+     "currency": "USD",
+     "destination": "original_payment",
+     "platform_booking_id": "$2.platform_booking_id",
+     "reason_code": "airline_cancelled"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "reservation_id": "HZ-R75B",
+     "vendor_id": "V-HERTZ"
+    },
+    "name": "car_get_reservation"
+   },
+   {
+    "args": {
+     "reservation_id": "HZ-R75B",
+     "vendor_id": "V-HERTZ"
+    },
+    "name": "car_cancel"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$5.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$7.refundable",
+     "currency": "USD",
+     "destination": "original_payment",
+     "platform_booking_id": "$5.platform_booking_id",
+     "reason_code": "customer_cancel"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "confirmation": "LKR75C",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "confirmation": "LKR75C",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_cancel"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$9.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$11.refundable",
+     "currency": "USD",
+     "destination": "original_payment",
+     "platform_booking_id": "$9.platform_booking_id",
+     "reason_code": "customer_cancel_free"
+    },
+    "name": "issue_refund"
+   },
+   {
+    "args": {
+     "confirmation": "RNR75D",
+     "vendor_id": "V-HTL-RIVERNORTH"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "confirmation": "RNR75D",
+     "text": "Guest drives down and arrives late on 30 Oct, after 22:00. Please hold the room.",
+     "vendor_id": "V-HTL-RIVERNORTH"
+    },
+    "name": "hotel_add_note"
+   },
+   {
+    "args": {
+     "text": "Done. Your Delta flight DLR75A is refunded USD 214 to the original payment. The Hertz car HZ-R75B is cancelled; Hertz keeps a USD 100 cancellation fee, and USD 176 of the USD 276 you paid is refunded to the original payment. Tonight's Fort Lauderdale hotel LKR75C is cancelled free of charge, and USD 149 is refunded to the original payment. Your Key West reservation RNR75D stays booked, and I added a note on it that you arrive late on 30 October."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

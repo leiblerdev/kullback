@@ -1,0 +1,423 @@
+{
+ "alts": {
+  "entitlement_and_note.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "KUF09A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "KUF09A",
+      "card_last4": "6609",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "adaeze.okonkwo@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "KUF09A",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_chargebacks"
+    },
+    {
+     "args": {
+      "chargeback_id": "$4.chargebacks.0.chargeback_id",
+      "decision": "accept"
+     },
+     "name": "respond_chargeback"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "KU cancelled the LOS to IAD return as a no-show after its own 10 hour delay broke the outbound connection.",
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "amount": "$5.amount",
+      "currency": "USD",
+      "message": "KUF09A return LOS to IAD cancelled by KU as a no-show after KU's 10 hour outbound delay; TripDesk accepted the cardholder's chargeback for USD 1190.00.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "chargeback_recovery",
+      "vendor_id": "V-KU"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id",
+      "text": "Chargeback accepted for the carrier's failure; recovery asked from KU."
+     },
+     "name": "add_note"
+    }
+   ]
+  },
+  "reclassify_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "KUF09A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "KUF09A",
+      "card_last4": "6609",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "adaeze.okonkwo@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "record_locator": "KUF09A",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "DLF09B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "cause": "supplier_fault",
+      "evidence": "KU cancelled the LOS to IAD return as a no-show after its own 10 hour delay broke the outbound connection.",
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "reclassify_cancellation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_chargebacks"
+    },
+    {
+     "args": {
+      "chargeback_id": "$7.chargebacks.0.chargeback_id",
+      "decision": "accept"
+     },
+     "name": "respond_chargeback"
+    },
+    {
+     "args": {
+      "amount": "$8.amount",
+      "currency": "USD",
+      "message": "KUF09A return LOS to IAD cancelled by KU as a no-show after KU's 10 hour outbound delay; TripDesk accepted the cardholder's chargeback for USD 1190.00.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "chargeback_recovery",
+      "vendor_id": "V-KU"
+     },
+     "name": "vendor_send"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {
+   "a booking was cancelled": [
+    "platform_bookings TD-R49A, cancelled, dated 2026-09-01, already on file before this conversation",
+    "vendor_bookings V-KU|KUF09A, cancelled, already on file before this conversation"
+   ]
+  },
+  "expected_diff": {
+   "chargebacks": [
+    {
+     "cols": {
+      "responded_at": "2026-10-29T12:00:00-04:00",
+      "response": "accept",
+      "status": "accepted"
+     },
+     "key": "CB-R49",
+     "op": "change"
+    }
+   ],
+   "payments": [
+    {
+     "cols": {
+      "dispute_status": "lost"
+     },
+     "key": "PM-R49A",
+     "op": "change"
+    }
+   ],
+   "platform_bookings": [
+    {
+     "cols": {
+      "details": {
+       "cancel_event": {
+        "at": "2026-10-24T18:00:00+01:00",
+        "by": "airline",
+        "cause": "supplier_fault"
+       },
+       "pax": 2,
+       "region": "MA"
+      }
+     },
+     "key": "TD-R49A",
+     "op": "change"
+    }
+   ],
+   "refunds": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 1190.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "destination": "original_payment",
+      "payment_id": "PM-R49A",
+      "platform_booking_id": "TD-R49A",
+      "reason_code": "chargeback_accepted",
+      "source": "card_network",
+      "state": "paid"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R49"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 1190.0,
+      "currency": "USD",
+      "platform_booking_id": "TD-R49A",
+      "reply_status": "approved",
+      "reply_text": "Accepted: the booking failed on our side, so the chargeback is ours. The amount is debited from our next settlement with TripDesk.",
+      "request_type": "chargeback_recovery",
+      "vendor_id": "V-KU"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-DOT-NODELAY] Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking? (met = 1: Does the agent follow this policy line: [SHOULD P-DOT-NODELAY] [V2] No US federal rule requires cash compensation for a delay, or for a missed connection caused by a separate booking?)",
+    "scope": [
+     "reclassify_cancellation"
+    ],
+    "tag": "P-DOT-NODELAY"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   }
+  ],
+  "message": "Our flight from Washington to Lagos through Casablanca (KUF09A) left 10 hours late, we missed the connection, had to rebook ourselves and flew the next day. Then at Lagos for the return they could NOT FIND OUR BOOKING. They cancelled it as a no show because we missed the connection they caused! We had to buy a Delta flight to New York through you (DLF09B) and a train home. I disputed the charge with my card and complained to the airline. Can you get us our money back for the return they cancelled? adaeze.okonkwo@example.com, 6609",
+  "strict_tables": [],
+  "task": "49_missed_connection_return_voided_chargeback",
+  "token": "621f76a088f18c074f2622e7cb5dc4a4"
+ },
+ "instruction": "Our flight from Washington to Lagos through Casablanca (KUF09A) left 10 hours late, we missed the connection, had to rebook ourselves and flew the next day. Then at Lagos for the return they could NOT FIND OUR BOOKING. They cancelled it as a no show because we missed the connection they caused! We had to buy a Delta flight to New York through you (DLF09B) and a train home. I disputed the charge with my card and complained to the airline. Can you get us our money back for the return they cancelled? adaeze.okonkwo@example.com, 6609\n",
+ "overlay": "{\n \"chargebacks\": {\n  \"CB-R49\": {\n   \"amount\": 1190.0,\n   \"chargeback_id\": \"CB-R49\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R49\",\n   \"evidence\": null,\n   \"filed_at\": \"2026-10-27T09:00:00-04:00\",\n   \"network_id\": \"V-VISA\",\n   \"payment_id\": \"PM-R49A\",\n   \"platform_booking_id\": \"TD-R49A\",\n   \"reason_code\": \"13.1\",\n   \"respond_by\": \"2026-11-26T09:00:00-05:00\",\n   \"responded_at\": null,\n   \"response\": null,\n   \"status\": \"open\"\n  }\n },\n \"contact_history\": {\n  \"CT-R49A\": {\n   \"actor\": \"agent\",\n   \"channel\": \"phone\",\n   \"contact_id\": \"CT-R49A\",\n   \"customer_id\": \"C-R49\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R49A\",\n   \"text\": \"Customer reports the return was cancelled as no-show; she will dispute the charge with her card.\",\n   \"ts\": \"2026-10-26T10:00:00-04:00\"\n  }\n },\n \"customers\": {\n  \"C-R49\": {\n   \"customer_id\": \"C-R49\",\n   \"email\": \"adaeze.okonkwo@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Adaeze Okonkwo\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R49A\": {\n   \"amount\": 2380.0,\n   \"card_last4\": \"6609\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R49\",\n   \"dispute_status\": \"open\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R49A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R49B\": {\n   \"amount\": 1240.0,\n   \"card_last4\": \"6609\",\n   \"created_at\": \"2026-10-24T19:30:00+01:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R49\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R49B\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R49A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R49\",\n   \"details\": {\n    \"cancel_event\": {\n     \"at\": \"2026-10-24T18:00:00+01:00\",\n     \"by\": \"airline\",\n     \"cause\": \"no_show_rule\"\n    },\n    \"pax\": 2,\n    \"region\": \"MA\"\n   },\n   \"payment_id\": \"PM-R49A\",\n   \"platform_booking_id\": \"TD-R49A\",\n   \"product_type\": \"flight\",\n   \"status\": \"cancelled\",\n   \"ticket_group\": null,\n   \"total\": 2380.0,\n   \"vendor_booking_id\": \"KUF09A\",\n   \"vendor_id\": \"V-KU\"\n  },\n  \"TD-R49B\": {\n   \"created_at\": \"2026-10-24T19:30:00+01:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R49\",\n   \"details\": {\n    \"pax\": 2,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R49B\",\n   \"platform_booking_id\": \"TD-R49B\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 1240.0,\n   \"vendor_booking_id\": \"DLF09B\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLF09B\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 2,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-26T05:40:00-04:00\",\n      \"dep\": \"2026-10-25T23:00:00+01:00\",\n      \"flight\": \"DL4911\",\n      \"from\": \"LOS\",\n      \"to\": \"JFK\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R49B\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DLF09B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-KU|KUF09A\": {\n   \"data\": {\n    \"fare_class\": \"Saver\",\n    \"outbound_delay_min\": 600,\n    \"pax\": 2,\n    \"region\": \"MA\",\n    \"return_cancelled_reason\": \"no_show after missed connection\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-11T07:30:00+01:00\",\n      \"dep\": \"2026-10-10T19:00:00-04:00\",\n      \"flight\": \"KU4901\",\n      \"from\": \"IAD\",\n      \"to\": \"CMN\"\n     },\n     {\n      \"arr\": \"2026-10-11T13:20:00+01:00\",\n      \"dep\": \"2026-10-11T10:10:00+01:00\",\n      \"flight\": \"KU4903\",\n      \"from\": \"CMN\",\n      \"to\": \"LOS\"\n     },\n     {\n      \"arr\": \"2026-10-25T03:10:00+01:00\",\n      \"dep\": \"2026-10-24T22:00:00+01:00\",\n      \"flight\": \"KU4905\",\n      \"from\": \"LOS\",\n      \"to\": \"CMN\"\n     },\n     {\n      \"arr\": \"2026-10-25T13:45:00-04:00\",\n      \"dep\": \"2026-10-25T10:00:00+01:00\",\n      \"flight\": \"KU4907\",\n      \"from\": \"CMN\",\n      \"to\": \"IAD\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R49A\",\n   \"status\": \"cancelled\",\n   \"vendor_booking_id\": \"KUF09A\",\n   \"vendor_id\": \"V-KU\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "621f76a088f18c074f2622e7cb5dc4a4\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/49_missed_connection_return_voided_chargeback\"\ndescription = \"Carrier booking KUF09A (return cancelled by the carrier as a no-show after its own 10 hour delay) -> open Visa chargeback for the USD 1190 return -> accept it (carrier's cancel_event) -> reclassify supplier_fault -> chargeback_recovery USD 1190 from the carrier.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"49_missed_connection_return_voided_chargeback__right\"\nchain = \"Carrier booking KUF09A (return cancelled by the carrier as a no-show after its own 10 hour delay) -> open Visa chargeback for the USD 1190 return -> accept it (carrier's cancel_event) -> reclassify supplier_fault -> chargeback_recovery USD 1190 from the carrier.\"\npersona = \"couple\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-KU\"]\nvendors_written = [\"V-KU\"]\ntrap_families = [\"history\", \"liability\", \"restraint\"]\ntraps = [\"contest_no_show\", \"recover_whole_fare\", \"refund_replacement_flight\"]\ncode_guards_on_route = [\"CB-EVIDENCE\", \"CB-RECOVER\", \"CB-VENDOR-FAULT\", \"IP-1\", \"IP-1b\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-VENDOR-REPLY\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-DOT-NODELAY\", \"WC-ES-CARE\", \"claims\"]\ncomplaint = \"https://www.reddit.com/r/Flights/comments/1q7mal4/royal_air_maroc_is_the_most_disappointing_airline/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "KUF09A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "KUF09A",
+     "card_last4": "6609",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "adaeze.okonkwo@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "KUF09A",
+     "vendor_id": "V-KU"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_chargebacks"
+   },
+   {
+    "args": {
+     "chargeback_id": "$4.chargebacks.0.chargeback_id",
+     "decision": "accept"
+    },
+    "name": "respond_chargeback"
+   },
+   {
+    "args": {
+     "cause": "supplier_fault",
+     "evidence": "KU cancelled the LOS to IAD return as a no-show after its own 10 hour delay broke the outbound connection.",
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "reclassify_cancellation"
+   },
+   {
+    "args": {
+     "amount": "$5.amount",
+     "currency": "USD",
+     "message": "KUF09A return LOS to IAD cancelled by KU as a no-show after KU's 10 hour outbound delay; TripDesk accepted the cardholder's chargeback for USD 1190.00.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "chargeback_recovery",
+     "vendor_id": "V-KU"
+    },
+    "name": "vendor_send"
+   }
+  ]
+ }
+}

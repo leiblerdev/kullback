@@ -1,0 +1,413 @@
+{
+ "alts": {
+  "reads_return_booking.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLF08B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLF08B",
+      "card_last4": "6508",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "daniel.osei@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLF08B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "record_locator": "DLF08D",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "JFK Terminal 4",
+      "pickup": "LaGuardia Terminal B",
+      "pickup_time": "2026-10-29T14:00:00-04:00",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "text": "Your Uber is booked: LaGuardia Terminal B to JFK Terminal 4, pickup 14:00 today (29 October), estimate USD 41, so you reach JFK about 14:45, two hours before DL4803 at 16:45. On the taxi money: Delta owes nothing for the transfer; the entitlement check on DLF08B gives no refund or compensation (the new departure is 2 h 15 min after the original, and you accepted the rebooking), so neither the USD 64 morning Uber nor this ride is owed back, and TripDesk does not refund them. Insurance: there is no travel insurance policy on these bookings, so there is nothing for TripDesk to claim; any cover you hold yourself is between you and your insurer."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "utc_pickup_time.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLF08B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLF08B",
+      "card_last4": "6508",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "daniel.osei@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "DLF08B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "JFK Terminal 4",
+      "pickup": "LaGuardia Terminal B",
+      "pickup_time": "2026-10-29T18:00:00Z",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "text": "Your Uber is booked: LaGuardia Terminal B to JFK Terminal 4, pickup 14:00 today (29 October), estimate USD 41, so you reach JFK about 14:45, two hours before DL4803 at 16:45. On the taxi money: Delta owes nothing for the transfer; the entitlement check on DLF08B gives no refund or compensation (the new departure is 2 h 15 min after the original, and you accepted the rebooking), so neither the USD 64 morning Uber nor this ride is owed back, and TripDesk does not refund them. Insurance: there is no travel insurance policy on these bookings, so there is nothing for TripDesk to claim; any cover you hold yourself is between you and your insurer."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "platform_bookings": [
+    {
+     "op": "add",
+     "row": {
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R48",
+      "details": {},
+      "payment_id": "PM-R48B",
+      "product_type": "ride",
+      "status": "scheduled",
+      "ticket_group": null,
+      "total": 41.0,
+      "vendor_id": "V-UBER"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R48"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "op": "add",
+     "row": {
+      "data": {
+       "driver_matched": false,
+       "dropoff": "JFK Terminal 4",
+       "est_price": 41.0,
+       "pickup": "LaGuardia Terminal B",
+       "pickup_time": "2026-10-29T14:00:00-04:00"
+      },
+      "status": "scheduled",
+      "vendor_id": "V-UBER"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-12b] Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise? (met = 1: Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise?)",
+    "scope": [
+     "ride_schedule"
+    ],
+    "tag": "IP-12b"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says an Uber is booked from LaGuardia Terminal B to JFK Terminal 4 with pickup at 14:00 on 29 October, estimate USD 41. (met = 1: In its replies to the customer, does the agent do this: Says an Uber is booked from LaGuardia Terminal B to JFK Terminal 4 with pickup at 14:00 on 29 October, estimate USD 41.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says Delta owes no money back for the LaGuardia to JFK transfer. (met = 1: In its replies to the customer, does the agent do this: Says Delta owes no money back for the LaGuardia to JFK transfer.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Does not say TripDesk will refund or pay the USD 64 morning Uber or the new ride. (met = 1: In its replies to the customer, does the agent do this: Does not say TripDesk will refund or pay the USD 64 morning Uber or the new ride.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Answers the insurance question: the taxi money is not owed by Delta or TripDesk, and any cover is between the customer and their own insurer. (met = 1: In its replies to the customer, does the agent do this: Answers the insurance question: the taxi money is not owed by Delta or TripDesk, and any cover is between the customer and their own insurer.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: Says why no insurance claim is filed: no policy is on these bookings, or any cover is between the customer and an insurer (INS-INSURER). (met = 1: In its replies to the customer, does the agent do this: Says why no insurance claim is filed: no policy is on these bookings, or any cover is between the customer and an insurer (INS-INSURER).)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   }
+  ],
+  "message": "I landed at JFK this morning and took an Uber over to LaGuardia for my flight to St. Louis (DLF08B). Now that flight is cancelled and you've moved me to a JFK, Chicago, St. Louis routing. Fine, I'll take it. Book me an Uber from LaGuardia Terminal B to JFK Terminal 4 so I'm there two hours before the new flight; the ride is about 45 minutes. Book the pickup for 14:00 today. Go ahead at whatever price the Uber quotes. Does the airline owe me the taxi money, or is that an insurance thing? daniel.osei@example.com, card 6508.",
+  "strict_tables": [],
+  "task": "48_rebooked_other_airport_uber_transfer",
+  "token": "d6bbd6edd231cc481b0fce0b31cb013d"
+ },
+ "instruction": "I landed at JFK this morning and took an Uber over to LaGuardia for my flight to St. Louis (DLF08B). Now that flight is cancelled and you've moved me to a JFK, Chicago, St. Louis routing. Fine, I'll take it. Book me an Uber from LaGuardia Terminal B to JFK Terminal 4 so I'm there two hours before the new flight; the ride is about 45 minutes. Book the pickup for 14:00 today. Go ahead at whatever price the Uber quotes. Does the airline owe me the taxi money, or is that an insurance thing? daniel.osei@example.com, card 6508.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R48\": {\n   \"customer_id\": \"C-R48\",\n   \"email\": \"daniel.osei@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Daniel Osei\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R48A\": {\n   \"amount\": 312.0,\n   \"card_last4\": \"6508\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R48\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R48A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R48B\": {\n   \"amount\": 64.0,\n   \"card_last4\": \"6508\",\n   \"created_at\": \"2026-10-29T09:50:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R48\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R48B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R48C\": {\n   \"amount\": 289.0,\n   \"card_last4\": \"6508\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R48\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R48C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R48A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R48\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R48A\",\n   \"platform_booking_id\": \"TD-R48A\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 312.0,\n   \"vendor_booking_id\": \"DLF08B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R48B\": {\n   \"created_at\": \"2026-10-29T09:05:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R48\",\n   \"details\": {},\n   \"payment_id\": \"PM-R48B\",\n   \"platform_booking_id\": \"TD-R48B\",\n   \"product_type\": \"ride\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 64.0,\n   \"vendor_booking_id\": \"UBF08C\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"TD-R48C\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R48\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R48C\",\n   \"platform_booking_id\": \"TD-R48C\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 289.0,\n   \"vendor_booking_id\": \"DLF08D\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"status_events\": {\n  \"SE-R48A\": {\n   \"data\": {\n    \"cause\": \"crew\",\n    \"flight\": \"DL4801\",\n    \"from\": \"LGA\",\n    \"status\": \"cancelled\",\n    \"to\": \"STL\"\n   },\n   \"event_id\": \"SE-R48A\",\n   \"service_date\": \"2026-10-29\",\n   \"service_id\": \"DL4801\",\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLF08B\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"history\": [\n     {\n      \"at\": \"2026-10-29T09:40:00-04:00\",\n      \"by\": \"airline\",\n      \"changed_from\": \"DL4801\"\n     }\n    ],\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"schedule_change\": {\n     \"accepted\": false,\n     \"new_dep\": \"2026-10-29T16:45:00-04:00\",\n     \"original_dep\": \"2026-10-29T14:30:00-04:00\"\n    },\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T18:35:00-05:00\",\n      \"dep\": \"2026-10-29T16:45:00-04:00\",\n      \"flight\": \"DL4803\",\n      \"from\": \"JFK\",\n      \"to\": \"ORD\"\n     },\n     {\n      \"arr\": \"2026-10-29T21:05:00-05:00\",\n      \"dep\": \"2026-10-29T19:40:00-05:00\",\n      \"flight\": \"DL4805\",\n      \"from\": \"ORD\",\n      \"to\": \"STL\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R48A\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLF08B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DLF08D\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-11-02T11:15:00-05:00\",\n      \"dep\": \"2026-11-02T07:30:00-06:00\",\n      \"flight\": \"DL4807\",\n      \"from\": \"STL\",\n      \"to\": \"LGA\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R48C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLF08D\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-UBER|UBF08C\": {\n   \"data\": {\n    \"dropoff\": \"LaGuardia Terminal B\",\n    \"ended_at\": \"2026-10-29T09:50:00-04:00\",\n    \"fare_lines\": [\n     {\n      \"amount\": 58.0,\n      \"type\": \"trip\"\n     },\n     {\n      \"amount\": 6.0,\n      \"type\": \"tolls\"\n     }\n    ],\n    \"kind\": \"on_demand\",\n    \"pickup\": \"JFK Terminal 4\",\n    \"requested_at\": \"2026-10-29T09:05:00-04:00\"\n   },\n   \"platform_booking_id\": \"TD-R48B\",\n   \"status\": \"completed\",\n   \"vendor_booking_id\": \"UBF08C\",\n   \"vendor_id\": \"V-UBER\"\n  }\n }\n}\n",
+ "places": {
+  "PL-78268ED3": {
+   "aliases": [
+    "la guardia airport lga t b",
+    "la guardia airport lga tb",
+    "la guardia airport lga terminal b",
+    "la guardia airport t b",
+    "la guardia airport tb",
+    "la guardia airport terminal b",
+    "la guardia international airport lga t b",
+    "la guardia international airport lga tb",
+    "la guardia international airport lga terminal b",
+    "la guardia international airport t b",
+    "la guardia international airport tb",
+    "la guardia international airport terminal b",
+    "la guardia lga t b",
+    "la guardia lga tb",
+    "la guardia lga terminal b",
+    "la guardia t b",
+    "la guardia tb",
+    "la guardia terminal b",
+    "laguardia airport lga t b",
+    "laguardia airport lga tb",
+    "laguardia airport lga terminal b",
+    "laguardia airport t b",
+    "laguardia airport tb",
+    "laguardia airport terminal b",
+    "laguardia international airport lga t b",
+    "laguardia international airport lga tb",
+    "laguardia international airport lga terminal b",
+    "laguardia international airport t b",
+    "laguardia international airport tb",
+    "laguardia international airport terminal b",
+    "laguardia lga t b",
+    "laguardia lga tb",
+    "laguardia lga terminal b",
+    "laguardia t b",
+    "laguardia tb",
+    "laguardia terminal b",
+    "lga airport t b",
+    "lga airport tb",
+    "lga airport terminal b",
+    "lga international airport t b",
+    "lga international airport tb",
+    "lga international airport terminal b",
+    "lga t b",
+    "lga tb",
+    "lga terminal b"
+   ],
+   "text": "LaGuardia Terminal B"
+  },
+  "PL-F07943FF": {
+   "aliases": [
+    "jfk airport t 4",
+    "jfk airport t4",
+    "jfk airport terminal 4",
+    "jfk international airport t 4",
+    "jfk international airport t4",
+    "jfk international airport terminal 4",
+    "jfk t 4",
+    "jfk t4",
+    "jfk terminal 4",
+    "john f kennedy airport jfk t 4",
+    "john f kennedy airport jfk t4",
+    "john f kennedy airport jfk terminal 4",
+    "john f kennedy airport t 4",
+    "john f kennedy airport t4",
+    "john f kennedy airport terminal 4",
+    "john f kennedy international airport jfk t 4",
+    "john f kennedy international airport jfk t4",
+    "john f kennedy international airport jfk terminal 4",
+    "john f kennedy international airport t 4",
+    "john f kennedy international airport t4",
+    "john f kennedy international airport terminal 4",
+    "john f kennedy jfk t 4",
+    "john f kennedy jfk t4",
+    "john f kennedy jfk terminal 4",
+    "john f kennedy t 4",
+    "john f kennedy t4",
+    "john f kennedy terminal 4",
+    "kennedy airport jfk t 4",
+    "kennedy airport jfk t4",
+    "kennedy airport jfk terminal 4",
+    "kennedy airport t 4",
+    "kennedy airport t4",
+    "kennedy airport terminal 4",
+    "kennedy international airport jfk t 4",
+    "kennedy international airport jfk t4",
+    "kennedy international airport jfk terminal 4",
+    "kennedy international airport t 4",
+    "kennedy international airport t4",
+    "kennedy international airport terminal 4",
+    "kennedy jfk t 4",
+    "kennedy jfk t4",
+    "kennedy jfk terminal 4",
+    "kennedy t 4",
+    "kennedy t4",
+    "kennedy terminal 4"
+   ],
+   "text": "JFK Terminal 4"
+  }
+ },
+ "secret": "d6bbd6edd231cc481b0fce0b31cb013d\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/48_rebooked_other_airport_uber_transfer\"\ndescription = \"Delta booking DLF08B (rebooked by Delta to DL4803, 16:45 from JFK) -> Uber scheduled from LaGuardia Terminal B to JFK Terminal 4 at 14:00 (two hours plus 45 minutes before 16:45) -> compute_entitlement on DLF08B: nothing owed -> reply: no transfer money from the airline, no insurance claim by TripDesk.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"48_rebooked_other_airport_uber_transfer__right\"\nchain = \"Delta booking DLF08B (rebooked by Delta to DL4803, 16:45 from JFK) -> Uber scheduled from LaGuardia Terminal B to JFK Terminal 4 at 14:00 (two hours plus 45 minutes before 16:45) -> compute_entitlement on DLF08B: nothing owed -> reply: no transfer money from the airline, no insurance claim by TripDesk.\"\npersona = \"business traveller\"\nregimes = [\"US DOT\"]\nvendors = [\"V-DELTA\", \"V-UBER\"]\nvendors_written = [\"V-UBER\", \"V-DELTA\"]\ntrap_families = [\"conditional\", \"identity\", \"liability\", \"time\"]\ntraps = [\"books_lyft\", \"cancel_return\", \"pickup_too_late\", \"refund_accepted_ticket\", \"refund_morning_uber\"]\ncode_guards_on_route = [\"IP-1\", \"IP-1b\"]\njudge_items_on_route = [\"CR-FCC\", \"IP-12b\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\"]\ncomplaint = \"https://www.reddit.com/r/americanairlines/comments/1s3add2/rebooked_but_have_to_change_airports_travel/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLF08B"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLF08B",
+     "card_last4": "6508",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "daniel.osei@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "DLF08B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_customer_bookings"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id",
+     "dropoff": "JFK Terminal 4",
+     "pickup": "LaGuardia Terminal B",
+     "pickup_time": "2026-10-29T14:00:00-04:00",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_schedule"
+   },
+   {
+    "args": {
+     "text": "Your Uber is booked: LaGuardia Terminal B to JFK Terminal 4, pickup 14:00 today (29 October), estimate USD 41, so you reach JFK about 14:45, two hours before DL4803 at 16:45. On the taxi money: Delta owes nothing for the transfer; the entitlement check on DLF08B gives no refund or compensation (the new departure is 2 h 15 min after the original, and you accepted the rebooking), so neither the USD 64 morning Uber nor this ride is owed back, and TripDesk does not refund them. Insurance: there is no travel insurance policy on these bookings, so there is nothing for TripDesk to claim; any cover you hold yourself is between you and your insurer."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

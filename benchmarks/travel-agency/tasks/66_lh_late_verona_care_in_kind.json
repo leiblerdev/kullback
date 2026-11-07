@@ -1,0 +1,370 @@
+{
+ "alts": {
+  "car_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR66A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR66A",
+      "card_last4": "5807",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "alex.romano@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "LHR66A",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$3.amount",
+      "currency": "EUR",
+      "message": "EU261 Art 7: arrival in MXP 525 minutes late after a missed connection in LIS on 25 Oct.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R66C",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R66B",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$7.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "text": "I filed the EU261 claim with Lufthansa, the operating carrier: 600 EUR for each of you, 1200 EUR for the two of you. The missed train to Verona (DB-R66B) was a Super Sparpreis ticket, which is never refunded: 0.00 EUR of the 38 EUR comes back. The Hertz car (HZ-R66C, 96 EUR) was used and returned, so 0.00 EUR of it is refundable, and it is not care the airline owes, so it is not claimed from Lufthansa either. The meal was paid with the airline voucher, so there is nothing to claim for it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "receipts_read.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR66A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR66A",
+      "card_last4": "5807",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "alex.romano@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "record_locator": "LHR66A",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$2.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$3.amount",
+      "currency": "EUR",
+      "message": "EU261 Art 7: arrival in MXP 525 minutes late after a missed connection in LIS on 25 Oct.",
+      "platform_booking_id": "$2.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "reservation_number": "DB-R66B",
+      "vendor_id": "V-DB"
+     },
+     "name": "rail_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$5.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "reservation_id": "HZ-R66C",
+      "vendor_id": "V-HERTZ"
+     },
+     "name": "car_get_reservation"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$7.platform_booking_id"
+     },
+     "name": "quote_cancellation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "text": "I filed the EU261 claim with Lufthansa, the operating carrier: 600 EUR for each of you, 1200 EUR for the two of you. The missed train to Verona (DB-R66B) was a Super Sparpreis ticket, which is never refunded: 0.00 EUR of the 38 EUR comes back. The Hertz car (HZ-R66C, 96 EUR) was used and returned, so 0.00 EUR of it is refundable, and it is not care the airline owes, so it is not claimed from Lufthansa either. The meal was paid with the airline voucher, so there is nothing to claim for it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R66"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 1200.0,
+      "currency": "EUR",
+      "platform_booking_id": "TD-R66A",
+      "reply_status": "approved",
+      "reply_text": "Compensation approved. Lufthansa pays it to the passenger by bank transfer.",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the missed train DB-R66B (Super Sparpreis, 38 EUR) is not refunded (0.00 EUR comes back) and not claimed from Lufthansa. (met = 1: In its replies to the customer, does the agent do this: Says the missed train DB-R66B (Super Sparpreis, 38 EUR) is not refunded (0.00 EUR comes back) and not claimed from Lufthansa.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says the Hertz car HZ-R66C (96 EUR) is not refunded (0.00 EUR refundable) and not claimed from Lufthansa. (met = 1: In its replies to the customer, does the agent do this: Says the Hertz car HZ-R66C (96 EUR) is not refunded (0.00 EUR refundable) and not claimed from Lufthansa.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   }
+  ],
+  "message": "We flew Newark to Milan via Lisbon (LHR66A), landed 8 hours 45 late after missing the Lisbon connection. They gave us meal vouchers, the receipt is attached anyway. We missed our 13:05 train to Verona (DB-R66B) and rented a Hertz car through you to get there (HZ-R66C). Please file the EU261 claim, and get the train and the car refunded or claimed from the airline. alex.romano@example.com, 5807.",
+  "strict_tables": [],
+  "task": "66_lh_late_verona_care_in_kind",
+  "token": "c006f9ebad2db0bff9e0e98597506299"
+ },
+ "instruction": "We flew Newark to Milan via Lisbon (LHR66A), landed 8 hours 45 late after missing the Lisbon connection. They gave us meal vouchers, the receipt is attached anyway. We missed our 13:05 train to Verona (DB-R66B) and rented a Hertz car through you to get there (HZ-R66C). Please file the EU261 claim, and get the train and the car refunded or claimed from the airline. alex.romano@example.com, 5807.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R66\": {\n   \"customer_id\": \"C-R66\",\n   \"email\": \"alex.romano@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Alex Romano\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"documents\": {\n  \"DOC-R66A\": {\n   \"amount\": 34.0,\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R66\",\n   \"doc_id\": \"DOC-R66A\",\n   \"kind\": \"receipt\",\n   \"meta\": {\n    \"category\": \"meal\",\n    \"note\": \"paid with Lufthansa voucher\",\n    \"place\": \"LIS airport\"\n   },\n   \"platform_booking_id\": \"TD-R66A\",\n   \"received_at\": \"2026-10-27T09:00:00-04:00\",\n   \"received_via\": \"email\",\n   \"routed\": 0\n  }\n },\n \"payments\": {\n  \"PM-R66A\": {\n   \"amount\": 1320.0,\n   \"card_last4\": \"5807\",\n   \"created_at\": \"2026-08-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R66\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R66A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R66B\": {\n   \"amount\": 38.0,\n   \"card_last4\": \"5807\",\n   \"created_at\": \"2026-08-01T10:10:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R66\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R66B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R66C\": {\n   \"amount\": 96.0,\n   \"card_last4\": \"5807\",\n   \"created_at\": \"2026-10-25T20:50:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R66\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R66C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R66A\": {\n   \"created_at\": \"2026-08-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R66\",\n   \"details\": {\n    \"pax\": 2,\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R66A\",\n   \"platform_booking_id\": \"TD-R66A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 1320.0,\n   \"vendor_booking_id\": \"LHR66A\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"TD-R66B\": {\n   \"created_at\": \"2026-08-01T10:10:00-04:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R66\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R66B\",\n   \"platform_booking_id\": \"TD-R66B\",\n   \"product_type\": \"rail\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 38.0,\n   \"vendor_booking_id\": \"DB-R66B\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"TD-R66C\": {\n   \"created_at\": \"2026-10-25T20:50:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R66\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R66C\",\n   \"platform_booking_id\": \"TD-R66C\",\n   \"product_type\": \"car\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 96.0,\n   \"vendor_booking_id\": \"HZ-R66C\",\n   \"vendor_id\": \"V-HERTZ\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DB|DB-R66B\": {\n   \"data\": {\n    \"date\": \"2026-10-25\",\n    \"delay_min\": 0,\n    \"dep\": \"2026-10-25T13:05:00+01:00\",\n    \"fare_class\": \"Super Sparpreis\",\n    \"from\": \"Milano Centrale\",\n    \"region\": \"EU\",\n    \"to\": \"Verona Porta Nuova\",\n    \"train\": \"FR 9725\"\n   },\n   \"platform_booking_id\": \"TD-R66B\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"DB-R66B\",\n   \"vendor_id\": \"V-DB\"\n  },\n  \"V-HERTZ|HZ-R66C\": {\n   \"data\": {\n    \"car_class\": \"Compact\",\n    \"currency\": \"EUR\",\n    \"daily_rate\": 96.0,\n    \"deposit_hold\": 300.0,\n    \"fuel_in\": 1.0,\n    \"fuel_out\": 1.0,\n    \"pickup_location\": \"MXP airport\",\n    \"pickup_time\": \"2026-10-25T21:00:00+01:00\",\n    \"rate_plan\": \"pay_now\",\n    \"return_location\": \"Verona city\",\n    \"return_mode\": \"attended\",\n    \"return_time\": \"2026-10-26T21:00:00+01:00\",\n    \"returned_at\": \"2026-10-26T18:00:00+01:00\",\n    \"state\": \"IT\"\n   },\n   \"platform_booking_id\": \"TD-R66C\",\n   \"status\": \"returned\",\n   \"vendor_booking_id\": \"HZ-R66C\",\n   \"vendor_id\": \"V-HERTZ\"\n  },\n  \"V-LH|LHR66A\": {\n   \"data\": {\n    \"arrival_delay_min\": 525,\n    \"care_provided\": [\n     \"meal\"\n    ],\n    \"departure_delay_min\": 120,\n    \"distance_km\": 6900,\n    \"extraordinary\": false,\n    \"fare_class\": \"Light\",\n    \"intra_eu\": false,\n    \"pax\": 2,\n    \"region\": \"EU\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-25T07:30:00+00:00\",\n      \"dep\": \"2026-10-24T18:30:00-04:00\",\n      \"flight\": \"LH9204\",\n      \"from\": \"EWR\",\n      \"to\": \"LIS\"\n     },\n     {\n      \"arr\": \"2026-10-25T11:50:00+01:00\",\n      \"dep\": \"2026-10-25T08:30:00+00:00\",\n      \"flight\": \"LH9206\",\n      \"from\": \"LIS\",\n      \"to\": \"MXP\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R66A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LHR66A\",\n   \"vendor_id\": \"V-LH\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "c006f9ebad2db0bff9e0e98597506299\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/66_lh_late_verona_care_in_kind\"\ndescription = \"Lufthansa booking read (8 hours 45 late) -> EU261 entitlement 1200 claimed from Lufthansa -> missed Verona train read and quoted (Super Sparpreis, 0.00 back) -> the car rented instead read and quoted (used, 0.00 back); not care, nobody owes it.\"\nkeywords = [\"EU261\", \"EU rail\"]\n\n[metadata]\nwalk = \"66_lh_late_verona_care_in_kind__right\"\nchain = \"Lufthansa booking read (8 hours 45 late) -> EU261 entitlement 1200 claimed from Lufthansa -> missed Verona train read and quoted (Super Sparpreis, 0.00 back) -> the car rented instead read and quoted (used, 0.00 back); not care, nobody owes it.\"\npersona = \"couple\"\nregimes = [\"EU261\", \"EU rail\"]\nvendors = [\"V-DB\", \"V-HERTZ\", \"V-LH\"]\nvendors_written = [\"V-LH\"]\ntrap_families = [\"history\", \"liability\", \"time\"]\ntraps = [\"claim_meal_given_in_kind\", \"claim_train_and_car_from_airline\", \"refund_departed_train\", \"refund_rental\"]\ncode_guards_on_route = [\"CARE-CLAIM\", \"IP-1\", \"IP-1b\"]\njudge_items_on_route = [\"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-VENDOR-REPLY\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"WC-ES-CARE\", \"claims\", \"reply.1\", \"reply.2\"]\ncomplaint = \"https://www.reddit.com/r/Flights/comments/1lfmc9p/tap_portugal_delay_eu261_advice/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "LHR66A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "LHR66A",
+     "card_last4": "5807",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "alex.romano@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "LHR66A",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "amount": "$3.amount",
+     "currency": "EUR",
+     "message": "EU261 Art 7: arrival in MXP 525 minutes late after a missed connection in LIS on 25 Oct.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "compensation_claim",
+     "vendor_id": "V-LH"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "reservation_number": "DB-R66B",
+     "vendor_id": "V-DB"
+    },
+    "name": "rail_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$5.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "reservation_id": "HZ-R66C",
+     "vendor_id": "V-HERTZ"
+    },
+    "name": "car_get_reservation"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$7.platform_booking_id"
+    },
+    "name": "quote_cancellation"
+   },
+   {
+    "args": {
+     "text": "I filed the EU261 claim with Lufthansa, the operating carrier: 600 EUR for each of you, 1200 EUR for the two of you. The missed train to Verona (DB-R66B) was a Super Sparpreis ticket, which is never refunded: 0.00 EUR of the 38 EUR comes back. The Hertz car (HZ-R66C, 96 EUR) was used and returned, so 0.00 EUR of it is refundable, and it is not care the airline owes, so it is not claimed from Lufthansa either. The meal was paid with the airline voucher, so there is nothing to claim for it."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

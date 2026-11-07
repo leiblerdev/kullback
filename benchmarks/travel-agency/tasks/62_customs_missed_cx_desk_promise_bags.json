@@ -1,0 +1,509 @@
+{
+ "alts": {
+  "also_send_invoice.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "KUR62A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "KUR62A",
+      "card_last4": "6620",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "lina.haddad@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "record_locator": "KUR62A",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "confirmation": "LKR62C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "amount": 289.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$3.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "KU ORD transfer desk told the family to book a room and send the invoice; LKR62C USD 289."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "amount": 289.0,
+      "currency": "USD",
+      "message": "Invoice for the room your ORD desk told the family to book on 24 Oct (LKR62C, USD 289).",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "info_request",
+      "vendor_id": "V-KU"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$6.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "record_locator": "DLR62B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "amount": 145.0,
+      "currency": "USD",
+      "message": "Bag DL662001 on DL2296 ORD-IAH 25 Oct not delivered; MBR filed; USD 145 interim purchases.",
+      "platform_booking_id": "$8.platform_booking_id",
+      "request_type": "bag_claim",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$10.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "policy_id": "$12.details.insurance_policy_id"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "text": "The KU transfer desk promised to reimburse the room, so I escalated the USD 289 for LKR62C to our supplier relations team as KU's liability; TripDesk does not refund it itself. I filed a bag claim with Delta for the USD 145 of baby things (bag DL662001), and Delta accepted it and pays your original form of payment. Your Allianz plan pays only what no carrier owes, so there is nothing to claim from it for the room while KU owes it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "bags_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "KUR62A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "KUR62A",
+      "card_last4": "6620",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "lina.haddad@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_commitments"
+    },
+    {
+     "args": {
+      "record_locator": "DLR62B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_documents"
+    },
+    {
+     "args": {
+      "amount": 145.0,
+      "currency": "USD",
+      "message": "Bag DL662001 on DL2296 ORD-IAH 25 Oct not delivered; MBR filed; USD 145 interim purchases.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "bag_claim",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$5.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_contact_history"
+    },
+    {
+     "args": {
+      "record_locator": "KUR62A",
+      "vendor_id": "V-KU"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "confirmation": "LKR62C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "amount": 289.0,
+      "currency": "USD",
+      "customer_id": "$0.matches.0.customer_id",
+      "platform_booking_id": "$8.platform_booking_id",
+      "queue": "supplier_relations",
+      "summary": "KU ORD transfer desk told the family to book a room and send the invoice; LKR62C USD 289."
+     },
+     "name": "escalate"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$9.platform_booking_id"
+     },
+     "name": "get_booking"
+    },
+    {
+     "args": {
+      "policy_id": "$11.details.insurance_policy_id"
+     },
+     "name": "insurance_get_policy"
+    },
+    {
+     "args": {
+      "text": "The KU transfer desk promised to reimburse the room, so I escalated the USD 289 for LKR62C to our supplier relations team as KU's liability; TripDesk does not refund it itself. I filed a bag claim with Delta for the USD 145 of baby things (bag DL662001), and Delta accepted it and pays your original form of payment. Your Allianz plan pays only what no carrier owes, so there is nothing to claim from it for the room while KU owes it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "escalations": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 289.0,
+      "commitment_id": null,
+      "currency": "USD",
+      "customer_id": "C-R62",
+      "owner": "Supplier relations",
+      "platform_booking_id": "TD-R62A",
+      "queue": "supplier_relations",
+      "sla_hours": 72
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R62"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 145.0,
+      "currency": "USD",
+      "platform_booking_id": "TD-R62B",
+      "reply_status": "approved",
+      "reply_text": "Claim accepted. Delta pays the amount claimed to the passenger's original form of payment.",
+      "request_type": "bag_claim",
+      "vendor_id": "V-DELTA"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-7b] Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority? (met = 1: Does the agent follow this policy line: [MUST IP-7b] The agent escalates on legal threats, safety issues, suspected fraud, or amounts above its authority?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7b"
+   },
+   {
+    "checkpoint": "- [judge.IP-7c] Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA? (met = 1: Does the agent follow this policy line: [SHOULD IP-7c] The agent should give the customer the escalation id, owner and SLA?)",
+    "scope": [
+     "escalate"
+    ],
+    "tag": "IP-7c"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says TripDesk does not refund the USD 289 room (LKR62C) itself. (met = 1: In its replies to the customer, does the agent do this: Says TripDesk does not refund the USD 289 room (LKR62C) itself.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says the USD 289 room was escalated to supplier relations as the KU desk's promise. (met = 1: In its replies to the customer, does the agent do this: Says the USD 289 room was escalated to supplier relations as the KU desk's promise.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says a bag claim for USD 145 (bag DL662001) was sent to Delta and accepted. (met = 1: In its replies to the customer, does the agent do this: Says a bag claim for USD 145 (bag DL662001) was sent to Delta and accepted.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says the room should not go to Allianz, because KU owes it (and the 75 minute delay is under the plan's 5 hour minimum). (met = 1: In its replies to the customer, does the agent do this: Says the room should not go to Allianz, because KU owes it (and the 75 minute delay is under the plan's 5 hour minimum).)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: Says the Allianz plan pays nothing for the room, either because KU owes it or because the 75 minute delay is under the plan's minimum of 5 hours. (met = 1: In its replies to the customer, does the agent do this: Says the Allianz plan pays nothing for the room, either because KU owes it or because the 75 minute delay is under the plan's minimum of 5 hours.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   }
+  ],
+  "message": "We flew Amman to Chicago (KUR62A) with our 10 month old, customs took almost two hours and we missed the Delta connection to Houston. The KU desk told us to book a hotel and email them the invoice, so we booked the last room through you (289). They now ignore us. Delta still has our bag; we spent 145 on baby things. Please claim the 145 dollars back from Delta for the bag. Can you just refund the hotel? Or should we use our Allianz insurance? lina.haddad@example.com, card 6620.",
+  "strict_tables": [],
+  "task": "62_customs_missed_cx_desk_promise_bags",
+  "token": "a3794251a0f610521cb53afd908ea6f8"
+ },
+ "instruction": "We flew Amman to Chicago (KUR62A) with our 10 month old, customs took almost two hours and we missed the Delta connection to Houston. The KU desk told us to book a hotel and email them the invoice, so we booked the last room through you (289). They now ignore us. Delta still has our bag; we spent 145 on baby things. Please claim the 145 dollars back from Delta for the bag. Can you just refund the hotel? Or should we use our Allianz insurance? lina.haddad@example.com, card 6620.\n",
+ "overlay": "{\n \"contact_history\": {\n  \"CT-R62A\": {\n   \"actor\": \"KU airport desk\",\n   \"channel\": \"phone\",\n   \"contact_id\": \"CT-R62A\",\n   \"customer_id\": \"C-R62\",\n   \"direction\": \"inbound\",\n   \"outcome\": \"recorded\",\n   \"platform_booking_id\": \"TD-R62A\",\n   \"text\": \"KU transfer desk ORD: book a room for the family tonight and email the invoice to KU customer relations; it will be reimbursed.\",\n   \"ts\": \"2026-10-24T19:30:00-05:00\"\n  }\n },\n \"customers\": {\n  \"C-R62\": {\n   \"customer_id\": \"C-R62\",\n   \"email\": \"lina.haddad@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Lina Haddad\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"documents\": {\n  \"DOC-R62A\": {\n   \"amount\": 145.0,\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"doc_id\": \"DOC-R62A\",\n   \"kind\": \"receipt\",\n   \"meta\": {\n    \"bag_tag\": \"DL662001\",\n    \"category\": \"necessities\",\n    \"items\": \"diapers, formula, clothes while bags delayed\"\n   },\n   \"platform_booking_id\": \"TD-R62B\",\n   \"received_at\": \"2026-10-27T09:00:00-04:00\",\n   \"received_via\": \"email\",\n   \"routed\": 0\n  }\n },\n \"insurance_policies\": {\n  \"INS-R62\": {\n   \"cancelled_at\": null,\n   \"cfar\": false,\n   \"covered_booking_ids\": [\n    \"TD-R62A\",\n    \"TD-R62B\",\n    \"TD-R62C\"\n   ],\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"insurer_id\": \"V-ALLIANZ\",\n   \"payment_id\": null,\n   \"plan\": \"OneTripPrime\",\n   \"policy_id\": \"INS-R62\",\n   \"premium\": 88.0,\n   \"premium_refunded\": 0.0,\n   \"purchased_at\": \"2026-08-01T10:10:00-05:00\",\n   \"status\": \"active\",\n   \"trip_cost\": 3400.0,\n   \"trip_end\": \"2026-11-08T20:00:00-06:00\",\n   \"trip_start\": \"2026-10-24T10:30:00+03:00\"\n  }\n },\n \"payments\": {\n  \"PM-R62A\": {\n   \"amount\": 2980.0,\n   \"card_last4\": \"6620\",\n   \"created_at\": \"2026-08-01T10:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R62A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R62B\": {\n   \"amount\": 420.0,\n   \"card_last4\": \"6620\",\n   \"created_at\": \"2026-08-01T10:05:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R62B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R62C\": {\n   \"amount\": 289.0,\n   \"card_last4\": \"6620\",\n   \"created_at\": \"2026-10-24T22:10:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R62C\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R62A\": {\n   \"created_at\": \"2026-08-01T10:00:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R62\",\n    \"pax\": 3,\n    \"region\": \"INTL\"\n   },\n   \"payment_id\": \"PM-R62A\",\n   \"platform_booking_id\": \"TD-R62A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 2980.0,\n   \"vendor_booking_id\": \"KUR62A\",\n   \"vendor_id\": \"V-KU\"\n  },\n  \"TD-R62B\": {\n   \"created_at\": \"2026-08-01T10:05:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R62\",\n    \"pax\": 3,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R62B\",\n   \"platform_booking_id\": \"TD-R62B\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 420.0,\n   \"vendor_booking_id\": \"DLR62B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R62C\": {\n   \"created_at\": \"2026-10-24T22:10:00-05:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R62\",\n   \"details\": {\n    \"insurance_policy_id\": \"INS-R62\",\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R62C\",\n   \"platform_booking_id\": \"TD-R62C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 289.0,\n   \"vendor_booking_id\": \"LKR62C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR62B\": {\n   \"data\": {\n    \"bags\": [\n     {\n      \"mbr_filed\": true,\n      \"status\": \"delayed\",\n      \"tag\": \"DL662001\"\n     }\n    ],\n    \"fare_class\": \"Classic\",\n    \"pax\": 3,\n    \"rebooked_from\": \"DL2290 24 Oct 19:10\",\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-25T10:40:00-05:00\",\n      \"dep\": \"2026-10-25T08:00:00-05:00\",\n      \"flight\": \"DL2296\",\n      \"from\": \"ORD\",\n      \"to\": \"IAH\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R62B\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"DLR62B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-HTL-LAKESIDE|LKR62C\": {\n   \"data\": {\n    \"booked_at\": \"2026-10-24T22:10:00-05:00\",\n    \"check_in\": \"2026-10-24\",\n    \"check_out\": \"2026-10-25\",\n    \"city\": \"Chicago O'Hare\"\n   },\n   \"platform_booking_id\": \"TD-R62C\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LKR62C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-KU|KUR62A\": {\n   \"data\": {\n    \"arrival_delay_min\": 75,\n    \"fare_class\": \"Saver\",\n    \"international\": true,\n    \"pax\": 3,\n    \"region\": \"INTL\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-24T16:47:00-05:00\",\n      \"dep\": \"2026-10-24T10:30:00+03:00\",\n      \"flight\": \"KU261\",\n      \"from\": \"AMM\",\n      \"to\": \"ORD\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R62A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"KUR62A\",\n   \"vendor_id\": \"V-KU\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "a3794251a0f610521cb53afd908ea6f8\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/62_customs_missed_cx_desk_promise_bags\"\ndescription = \"Contact history (the carrier desk told them to book a room and send the invoice) -> carrier booking and the airport hotel read -> desk promise escalated to supplier relations with the amount -> Delta connection read, bags not delivered -> bag claim -> policy read, no claim while the carrier owes the room.\"\nkeywords = [\"US DOT\"]\n\n[metadata]\nwalk = \"62_customs_missed_cx_desk_promise_bags__right\"\nchain = \"Contact history (the carrier desk told them to book a room and send the invoice) -> carrier booking and the airport hotel read -> desk promise escalated to supplier relations with the amount -> Delta connection read, bags not delivered -> bag claim -> policy read, no claim while the carrier owes the room.\"\npersona = \"family\"\nregimes = [\"US DOT\"]\nvendors = [\"V-ALLIANZ\", \"V-DELTA\", \"V-HTL-LAKESIDE\", \"V-KU\"]\nvendors_written = [\"V-KU\", \"V-DELTA\"]\ntrap_families = [\"amount\", \"conditional\", \"history\", \"liability\"]\ntraps = [\"bag_claim_plus_room\", \"insure_before_carrier\", \"promise_to_goodwill\", \"refund_hotel_ourselves\"]\ncode_guards_on_route = [\"CV-BAG-CLAIM\", \"IP-1\", \"IP-1b\", \"IP-7\", \"IP-7d\", \"IP-9e\"]\njudge_items_on_route = [\"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-VENDOR-REPLY\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-7b\", \"IP-7c\", \"IP-8\", \"WC-ES-CARE\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\"]\ncomplaint = \"https://www.reddit.com/r/travel/comments/1echd2j/advice_on_missed_connection/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "KUR62A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "KUR62A",
+     "card_last4": "6620",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "lina.haddad@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_contact_history"
+   },
+   {
+    "args": {
+     "record_locator": "KUR62A",
+     "vendor_id": "V-KU"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "confirmation": "LKR62C",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "amount": 289.0,
+     "currency": "USD",
+     "customer_id": "$0.matches.0.customer_id",
+     "platform_booking_id": "$3.platform_booking_id",
+     "queue": "supplier_relations",
+     "summary": "KU ORD transfer desk told the family to book a room and send the invoice; LKR62C USD 289."
+    },
+    "name": "escalate"
+   },
+   {
+    "args": {
+     "record_locator": "DLR62B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_documents"
+   },
+   {
+    "args": {
+     "amount": 145.0,
+     "currency": "USD",
+     "message": "Bag DL662001 on DL2296 ORD-IAH 25 Oct not delivered; MBR filed; USD 145 interim purchases.",
+     "platform_booking_id": "$6.platform_booking_id",
+     "request_type": "bag_claim",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "thread_id": "$8.thread_id"
+    },
+    "name": "vendor_check"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$4.platform_booking_id"
+    },
+    "name": "get_booking"
+   },
+   {
+    "args": {
+     "policy_id": "$10.details.insurance_policy_id"
+    },
+    "name": "insurance_get_policy"
+   },
+   {
+    "args": {
+     "text": "The KU transfer desk promised to reimburse the room, so I escalated the USD 289 for LKR62C to our supplier relations team as KU's liability; TripDesk does not refund it itself. I filed a bag claim with Delta for the USD 145 of baby things (bag DL662001), and Delta accepted it and pays your original form of payment. Your Allianz plan pays only what no carrier owes, so there is nothing to claim from it for the room while KU owes it."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

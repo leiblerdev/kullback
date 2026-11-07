@@ -1,0 +1,653 @@
+{
+ "alts": {
+  "low_cap_probe_then_change.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR02B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR02B",
+      "card_last4": "4202",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "owen.pratt@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "train": "93",
+      "vendor_id": "V-AMTRAK"
+     },
+     "name": "rail_get_train_status"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R02A"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "record_locator": "DLR02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "ATL",
+      "origin": "DCA",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 40.0,
+      "new_flight": "DL1706",
+      "record_locator": "DLR02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "max_fare_difference": 60.0,
+      "new_flight": "DL1706",
+      "record_locator": "DLR02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R02C",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R02C",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_cancel_scheduled"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "$9.data.dropoff",
+      "pickup": "$9.data.pickup",
+      "pickup_time": "2026-10-29T15:20:00-04:00",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "text": "I moved you to Delta DL1706 to Atlanta, departing 16:40, the first flight you can make after the late train. The fare difference of USD 45 is charged, within your USD 60 limit. Your Uber is cancelled and rebooked from Alexandria Union Station to DCA Terminal 2, with pickup at 15:20. Amtrak owes no delay compensation for the 150-minute delay of train 93. Last year's USD 50 voucher (commitment CM-R02A, train 176) is already fulfilled, so it gives no new entitlement for train 93. Train 93 (AMR02A, Value fare) gives no refund either."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "ride_before_flight.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR02B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR02B",
+      "card_last4": "4202",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "owen.pratt@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "train": "93",
+      "vendor_id": "V-AMTRAK"
+     },
+     "name": "rail_get_train_status"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R02C",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_get_scheduled"
+    },
+    {
+     "args": {
+      "ride_id": "UB-R02C",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_cancel_scheduled"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "$4.data.dropoff",
+      "pickup": "$4.data.pickup",
+      "pickup_time": "2026-10-29T15:20:00-04:00",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R02A"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "record_locator": "DLR02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "ATL",
+      "origin": "DCA",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 60.0,
+      "new_flight": "DL1706",
+      "record_locator": "DLR02B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "text": "I moved you to Delta DL1706 to Atlanta, departing 16:40, the first flight you can make after the late train. The fare difference of USD 45 is charged, within your USD 60 limit. Your Uber is cancelled and rebooked from Alexandria Union Station to DCA Terminal 2, with pickup at 15:20. Amtrak owes no delay compensation for the 150-minute delay of train 93. Last year's USD 50 voucher (commitment CM-R02A, train 176) is already fulfilled, so it gives no new entitlement for train 93. Train 93 (AMR02A, Value fare) gives no refund either."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "charges": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 45.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R02",
+      "platform_booking_id": "TD-R02B",
+      "reason": "flight_change"
+     }
+    }
+   ],
+   "inventory": [
+    {
+     "cols": {
+      "seats": 2
+     },
+     "key": "V-DELTA|DL1706",
+     "op": "change"
+    }
+   ],
+   "platform_bookings": [
+    {
+     "cols": {
+      "status": "cancelled"
+     },
+     "key": "TD-R02C",
+     "op": "change"
+    },
+    {
+     "op": "add",
+     "row": {
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R02",
+      "details": {},
+      "payment_id": "PM-R02A",
+      "product_type": "ride",
+      "status": "scheduled",
+      "ticket_group": null,
+      "total": 41.0,
+      "vendor_id": "V-UBER"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R02"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "fare_class": "Classic",
+       "history": [
+        {
+         "at": "2026-10-29T12:00:00-04:00",
+         "changed_from": "DL1702",
+         "cost": 45.0
+        }
+       ],
+       "pax": 1,
+       "region": "US",
+       "segments": [
+        {
+         "arr": "2026-10-29T18:35:00-04:00",
+         "dep": "2026-10-29T16:40:00-04:00",
+         "flight": "DL1706",
+         "from": "DCA",
+         "to": "ATL"
+        }
+       ]
+      }
+     },
+     "key": "V-DELTA|DLR02B",
+     "op": "change"
+    },
+    {
+     "cols": {
+      "status": "cancelled"
+     },
+     "key": "V-UBER|UB-R02C",
+     "op": "change"
+    },
+    {
+     "op": "add",
+     "row": {
+      "data": {
+       "driver_matched": false,
+       "dropoff": "DCA Terminal 2",
+       "est_price": 41.0,
+       "pickup": "Alexandria Union Station",
+       "pickup_time": "2026-10-29T15:20:00-04:00"
+      },
+      "status": "scheduled",
+      "vendor_id": "V-UBER"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-11] Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city? (met = 1: Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "IP-11"
+   },
+   {
+    "checkpoint": "- [judge.IP-12b] Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise? (met = 1: Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise?)",
+    "scope": [
+     "ride_schedule"
+    ],
+    "tag": "IP-12b"
+   },
+   {
+    "checkpoint": "- [judge.CV-CANCEL-STATUS] Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer? (met = 1: Does the agent follow this policy line: [MUST CV-CANCEL-STATUS] [synthetic] flight_cancel, rail_cancel and hotel_cancel cancel only a confirmed booking (flight_cancel and rail_cancel only before departure), and ride_cancel_scheduled only a scheduled ride, each only where the message asks for that cancellation (IP-2); the vendor booking and its platform_booking_id row then both take status cancelled, and flight_cancel and rail_cancel record in the booking's details a cancel_event at the current time by the customer?)",
+    "scope": [
+     "flight_cancel",
+     "hotel_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CV-CANCEL-STATUS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FLIGHT-PORT] Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard? (met = 1: Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "CR-FLIGHT-PORT"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that Amtrak owes no delay compensation for the 150-minute delay of train 93. (met = 1: In its replies to the customer, does the agent do this: States that Amtrak owes no delay compensation for the 150-minute delay of train 93.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that last year's USD 50 voucher (commitment CM-R02A, train 176) is already fulfilled and gives no new entitlement for train 93. (met = 1: In its replies to the customer, does the agent do this: States that last year's USD 50 voucher (commitment CM-R02A, train 176) is already fulfilled and gives no new entitlement for train 93.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Gives the new flight DL1706 departing 16:40 and the USD 45 fare difference charged. (met = 1: In its replies to the customer, does the agent do this: Gives the new flight DL1706 departing 16:40 and the USD 45 fare difference charged.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Gives the new Uber from Alexandria Union Station to DCA Terminal 2, pickup 15:20. (met = 1: In its replies to the customer, does the agent do this: Gives the new Uber from Alexandria Union Station to DCA Terminal 2, pickup 15:20.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: States that train 93 (AMR02A, Value fare) gives no refund either. (met = 1: In its replies to the customer, does the agent do this: States that train 93 (AMR02A, Value fare) gives no refund either.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   }
+  ],
+  "message": "My Amtrak train 93 to Alexandria is running way late, it says arrival around 3 now instead of 12:30, so I'm going to miss my Delta flight out of Reagan at 2:30 (DLR02B). Please move me to the first flight to Atlanta I can actually make, I'll pay up to $60 more. My Uber from Alexandria station to the airport needs to move too. And am I entitled to anything from Amtrak besides a refund? Last year they gave me a $50 voucher for something like this. owen.pratt@example.com, card 4202.",
+  "strict_tables": [],
+  "task": "02_amtrak_delay_moves_flight_and_uber",
+  "token": "7fa94e2c74bd3c9032645e9b752632cb"
+ },
+ "instruction": "My Amtrak train 93 to Alexandria is running way late, it says arrival around 3 now instead of 12:30, so I'm going to miss my Delta flight out of Reagan at 2:30 (DLR02B). Please move me to the first flight to Atlanta I can actually make, I'll pay up to $60 more. My Uber from Alexandria station to the airport needs to move too. And am I entitled to anything from Amtrak besides a refund? Last year they gave me a $50 voucher for something like this. owen.pratt@example.com, card 4202.\n",
+ "overlay": "{\n \"commitments\": {\n  \"CM-R02A\": {\n   \"authority_limit\": 500.0,\n   \"commitment_id\": \"CM-R02A\",\n   \"created_at\": \"2025-09-12T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"made_by\": \"agent_mia\",\n   \"max_amount\": 50.0,\n   \"platform_booking_id\": \"TD-R02E\",\n   \"role\": \"agent\",\n   \"status\": \"fulfilled\",\n   \"text\": \"USD 50 voucher for the 2025 delay on train 176.\"\n  }\n },\n \"customers\": {\n  \"C-R02\": {\n   \"customer_id\": \"C-R02\",\n   \"email\": \"owen.pratt@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Owen Pratt\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"inventory\": {\n  \"V-DELTA|DL1704\": {\n   \"arr\": \"2026-10-29T17:50:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T15:55:00-04:00\",\n   \"dest\": \"ATL\",\n   \"fare_difference\": 20.0,\n   \"kind\": \"flight\",\n   \"origin\": \"DCA\",\n   \"product_id\": \"DL1704\",\n   \"seats\": 4,\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DL1706\": {\n   \"arr\": \"2026-10-29T18:35:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T16:40:00-04:00\",\n   \"dest\": \"ATL\",\n   \"fare_difference\": 45.0,\n   \"kind\": \"flight\",\n   \"origin\": \"DCA\",\n   \"product_id\": \"DL1706\",\n   \"seats\": 3,\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DL1708\": {\n   \"arr\": \"2026-10-29T20:25:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T18:30:00-04:00\",\n   \"dest\": \"ATL\",\n   \"fare_difference\": 0.0,\n   \"kind\": \"flight\",\n   \"origin\": \"DCA\",\n   \"product_id\": \"DL1708\",\n   \"seats\": 9,\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"payments\": {\n  \"PM-R02A\": {\n   \"amount\": 89.0,\n   \"card_last4\": \"4202\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R02A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R02B\": {\n   \"amount\": 240.0,\n   \"card_last4\": \"4202\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R02B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R02C\": {\n   \"amount\": 41.0,\n   \"card_last4\": \"4202\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R02C\",\n   \"status\": \"authorized\"\n  },\n  \"PM-R02D\": {\n   \"amount\": 89.0,\n   \"card_last4\": \"4202\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R02D\",\n   \"status\": \"captured\"\n  },\n  \"PM-R02E\": {\n   \"amount\": 89.0,\n   \"card_last4\": \"4202\",\n   \"created_at\": \"2025-08-20T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R02E\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R02A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R02A\",\n   \"platform_booking_id\": \"TD-R02A\",\n   \"product_type\": \"rail\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 89.0,\n   \"vendor_booking_id\": \"AMR02A\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"TD-R02B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R02B\",\n   \"platform_booking_id\": \"TD-R02B\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 240.0,\n   \"vendor_booking_id\": \"DLR02B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R02C\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"details\": {},\n   \"payment_id\": \"PM-R02C\",\n   \"platform_booking_id\": \"TD-R02C\",\n   \"product_type\": \"ride\",\n   \"status\": \"scheduled\",\n   \"ticket_group\": null,\n   \"total\": 41.0,\n   \"vendor_booking_id\": \"UB-R02C\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"TD-R02D\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R02D\",\n   \"platform_booking_id\": \"TD-R02D\",\n   \"product_type\": \"rail\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 89.0,\n   \"vendor_booking_id\": \"AMR02D\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"TD-R02E\": {\n   \"created_at\": \"2025-08-20T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R02\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R02E\",\n   \"platform_booking_id\": \"TD-R02E\",\n   \"product_type\": \"rail\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 89.0,\n   \"vendor_booking_id\": \"AMR02E\",\n   \"vendor_id\": \"V-AMTRAK\"\n  }\n },\n \"status_events\": {\n  \"SE-R02A\": {\n   \"data\": {\n    \"cause\": \"signal failure\",\n    \"delay_min\": 150,\n    \"projected_arrival\": \"2026-10-29T15:00:00-04:00\",\n    \"scheduled_arrival\": \"2026-10-29T12:30:00-04:00\",\n    \"status\": \"delayed\",\n    \"train\": \"93\"\n   },\n   \"event_id\": \"SE-R02A\",\n   \"service_date\": \"2026-10-29\",\n   \"service_id\": \"93\",\n   \"vendor_id\": \"V-AMTRAK\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-AMTRAK|AMR02A\": {\n   \"data\": {\n    \"date\": \"2026-10-29\",\n    \"dep\": \"2026-10-29T08:05:00-04:00\",\n    \"fare_class\": \"Value\",\n    \"from\": \"NYP\",\n    \"region\": \"US\",\n    \"to\": \"ALX\",\n    \"train\": \"93\"\n   },\n   \"platform_booking_id\": \"TD-R02A\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"AMR02A\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"V-AMTRAK|AMR02D\": {\n   \"data\": {\n    \"date\": \"2026-11-02\",\n    \"dep\": \"2026-11-02T16:10:00-05:00\",\n    \"fare_class\": \"Value\",\n    \"from\": \"ALX\",\n    \"region\": \"US\",\n    \"to\": \"NYP\",\n    \"train\": \"176\"\n   },\n   \"platform_booking_id\": \"TD-R02D\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"AMR02D\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"V-DELTA|DLR02B\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T16:25:00-04:00\",\n      \"dep\": \"2026-10-29T14:30:00-04:00\",\n      \"flight\": \"DL1702\",\n      \"from\": \"DCA\",\n      \"to\": \"ATL\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R02B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLR02B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-UBER|UB-R02C\": {\n   \"data\": {\n    \"driver_matched\": false,\n    \"dropoff\": \"DCA Terminal 2\",\n    \"est_price\": 41.0,\n    \"pickup\": \"Alexandria Union Station\",\n    \"pickup_time\": \"2026-10-29T12:50:00-04:00\"\n   },\n   \"platform_booking_id\": \"TD-R02C\",\n   \"status\": \"scheduled\",\n   \"vendor_booking_id\": \"UB-R02C\",\n   \"vendor_id\": \"V-UBER\"\n  },\n  \"V-AMTRAK|AMR02E\": {\n   \"data\": {\n    \"date\": \"2025-09-10\",\n    \"dep\": \"2025-09-10T16:10:00-04:00\",\n    \"fare_class\": \"Value\",\n    \"from\": \"ALX\",\n    \"region\": \"US\",\n    \"to\": \"NYP\",\n    \"train\": \"176\"\n   },\n   \"platform_booking_id\": \"TD-R02E\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"AMR02E\",\n   \"vendor_id\": \"V-AMTRAK\"\n  }\n }\n}\n",
+ "places": {
+  "PL-6A2A939D": {
+   "aliases": [
+    "alexandria union station"
+   ],
+   "text": "Alexandria Union Station"
+  },
+  "PL-EBC34CDD": {
+   "aliases": [
+    "dca airport t 2",
+    "dca airport t2",
+    "dca airport terminal 2",
+    "dca international airport t 2",
+    "dca international airport t2",
+    "dca international airport terminal 2",
+    "dca t 2",
+    "dca t2",
+    "dca terminal 2",
+    "reagan national airport dca t 2",
+    "reagan national airport dca t2",
+    "reagan national airport dca terminal 2",
+    "reagan national airport t 2",
+    "reagan national airport t2",
+    "reagan national airport terminal 2",
+    "reagan national dca t 2",
+    "reagan national dca t2",
+    "reagan national dca terminal 2",
+    "reagan national international airport dca t 2",
+    "reagan national international airport dca t2",
+    "reagan national international airport dca terminal 2",
+    "reagan national international airport t 2",
+    "reagan national international airport t2",
+    "reagan national international airport terminal 2",
+    "reagan national t 2",
+    "reagan national t2",
+    "reagan national terminal 2",
+    "ronald reagan washington national airport dca t 2",
+    "ronald reagan washington national airport dca t2",
+    "ronald reagan washington national airport dca terminal 2",
+    "ronald reagan washington national airport t 2",
+    "ronald reagan washington national airport t2",
+    "ronald reagan washington national airport terminal 2",
+    "ronald reagan washington national dca t 2",
+    "ronald reagan washington national dca t2",
+    "ronald reagan washington national dca terminal 2",
+    "ronald reagan washington national international airport dca t 2",
+    "ronald reagan washington national international airport dca t2",
+    "ronald reagan washington national international airport dca terminal 2",
+    "ronald reagan washington national international airport t 2",
+    "ronald reagan washington national international airport t2",
+    "ronald reagan washington national international airport terminal 2",
+    "ronald reagan washington national t 2",
+    "ronald reagan washington national t2",
+    "ronald reagan washington national terminal 2",
+    "washington national airport dca t 2",
+    "washington national airport dca t2",
+    "washington national airport dca terminal 2",
+    "washington national airport t 2",
+    "washington national airport t2",
+    "washington national airport terminal 2",
+    "washington national dca t 2",
+    "washington national dca t2",
+    "washington national dca terminal 2",
+    "washington national international airport dca t 2",
+    "washington national international airport dca t2",
+    "washington national international airport dca terminal 2",
+    "washington national international airport t 2",
+    "washington national international airport t2",
+    "washington national international airport terminal 2",
+    "washington national t 2",
+    "washington national t2",
+    "washington national terminal 2"
+   ],
+   "text": "DCA Terminal 2"
+  }
+ },
+ "secret": "7fa94e2c74bd3c9032645e9b752632cb\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/02_amtrak_delay_moves_flight_and_uber\"\ndescription = \"Amtrak status (projected arrival 15:00) -> Delta flight_search and flight_change to the first flight 90 minutes after it -> Uber ride read, cancelled and re-scheduled 20 minutes after the train's arrival.\"\nkeywords = [\"Amtrak\", \"US DOT\"]\n\n[metadata]\nwalk = \"02_amtrak_delay_moves_flight_and_uber__right\"\nchain = \"Amtrak status (projected arrival 15:00) -> Delta flight_search and flight_change to the first flight 90 minutes after it -> Uber ride read, cancelled and re-scheduled 20 minutes after the train's arrival.\"\npersona = \"solo traveller\"\nregimes = [\"Amtrak\", \"US DOT\"]\nvendors = [\"V-AMTRAK\", \"V-DELTA\", \"V-UBER\"]\nvendors_written = [\"V-DELTA\", \"V-UBER\"]\ntrap_families = [\"identity\", \"restraint\", \"time\"]\ntraps = [\"cancel_return_train\", \"flight_too_close\", \"refund_amtrak_fare\"]\ncode_guards_on_route = [\"CV-SEATS\", \"CV-UBER-RESERVE\", \"IP-1\", \"IP-1b\", \"P-DELTA\", \"P-DELTA-BASIC\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-FLIGHT-PORT\", \"CR-ITIN\", \"CR-MSC-NAME\", \"CV-CANCEL-STATUS\", \"IP-11\", \"IP-12b\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\"]\ncomplaint = \"https://www.reddit.com/r/Amtrak/comments/1m99mjj/2hour_train_ride_very_delayedam_i_entitled_to/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLR02B"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLR02B",
+     "card_last4": "4202",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "owen.pratt@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_customer_bookings"
+   },
+   {
+    "args": {
+     "date": "2026-10-29",
+     "train": "93",
+     "vendor_id": "V-AMTRAK"
+    },
+    "name": "rail_get_train_status"
+   },
+   {
+    "args": {
+     "platform_booking_id": "TD-R02A"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "record_locator": "DLR02B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "date": "2026-10-29",
+     "dest": "ATL",
+     "origin": "DCA",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_search"
+   },
+   {
+    "args": {
+     "max_fare_difference": 60.0,
+     "new_flight": "DL1706",
+     "record_locator": "DLR02B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_change"
+   },
+   {
+    "args": {
+     "ride_id": "UB-R02C",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_get_scheduled"
+   },
+   {
+    "args": {
+     "ride_id": "UB-R02C",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_cancel_scheduled"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id",
+     "dropoff": "$8.data.dropoff",
+     "pickup": "$8.data.pickup",
+     "pickup_time": "2026-10-29T15:20:00-04:00",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_schedule"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_commitments"
+   },
+   {
+    "args": {
+     "text": "I moved you to Delta DL1706 to Atlanta, departing 16:40, the first flight you can make after the late train. The fare difference of USD 45 is charged, within your USD 60 limit. Your Uber is cancelled and rebooked from Alexandria Union Station to DCA Terminal 2, with pickup at 15:20. Amtrak owes no delay compensation for the 150-minute delay of train 93. Last year's USD 50 voucher (commitment CM-R02A, train 176) is already fulfilled, so it gives no new entitlement for train 93. Train 93 (AMR02A, Value fare) gives no refund either."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

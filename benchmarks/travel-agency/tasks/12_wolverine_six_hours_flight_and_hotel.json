@@ -1,0 +1,516 @@
+{
+ "alts": {
+  "late_arrival_message.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR12B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR12B",
+      "card_last4": "5313",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "graham.lowe@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "train": "353",
+      "vendor_id": "V-AMTRAK"
+     },
+     "name": "rail_get_train_status"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R12A"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "record_locator": "DLR12B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "ATL",
+      "origin": "DTW",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 100.0,
+      "new_flight": "DL1354",
+      "record_locator": "DLR12B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "confirmation": "30113313",
+      "vendor_id": "V-HILTON-ATLMID"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "message": "Guest delayed by a train breakdown; landing 22:20 on DL1354, arriving about 23:15. Please hold the room.",
+      "platform_booking_id": "$8.platform_booking_id",
+      "request_type": "late_arrival",
+      "vendor_id": "V-HILTON-ATLMID"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "thread_id": "$9.thread_id"
+     },
+     "name": "vendor_check"
+    },
+    {
+     "args": {
+      "text": "Yes, you are rebooked: DLR12B is now on DL1354, departing Detroit at 20:15 and landing in Atlanta at 22:20, for a fare difference of 65 USD charged to your card, within the 100 USD you allowed. Train 353 is now due into Detroit at 18:40, and DL1354 is the earliest flight leaving at least 90 minutes after that (DL1352 at 19:30 is too tight). I messaged your Atlanta hotel about reservation 30113313 that you are delayed, landing 22:20 and arriving about 23:15, and the hotel replied that your guaranteed reservation is held for your late arrival. Amtrak will not pay the 65 USD rebooking: Amtrak pays no cash compensation for delays, so there is nothing to claim from them for it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "refused_change_probe.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "DLR12B"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "DLR12B",
+      "card_last4": "5313",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "graham.lowe@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "train": "353",
+      "vendor_id": "V-AMTRAK"
+     },
+     "name": "rail_get_train_status"
+    },
+    {
+     "args": {
+      "platform_booking_id": "TD-R12A"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "record_locator": "DLR12B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "date": "2026-10-29",
+      "dest": "ATL",
+      "origin": "DTW",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_search"
+    },
+    {
+     "args": {
+      "max_fare_difference": 60.0,
+      "new_flight": "DL1354",
+      "record_locator": "DLR12B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "max_fare_difference": 100.0,
+      "new_flight": "DL1354",
+      "record_locator": "DLR12B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_change"
+    },
+    {
+     "args": {
+      "confirmation": "30113313",
+      "vendor_id": "V-HILTON-ATLMID"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "confirmation": "30113313",
+      "text": "Guest delayed by a train breakdown; now landing 22:20, arriving about 23:15. Please hold the room.",
+      "vendor_id": "V-HILTON-ATLMID"
+     },
+     "name": "hotel_add_note"
+    },
+    {
+     "args": {
+      "text": "Yes, you are rebooked: DLR12B is now on DL1354, departing Detroit at 20:15 and landing in Atlanta at 22:20, for a fare difference of 65 USD charged to your card, within the 100 USD you allowed. Train 353 is now due into Detroit at 18:40, and DL1354 is the earliest flight leaving at least 90 minutes after that (DL1352 at 19:30 is too tight). I added a note to your Atlanta hotel reservation 30113313 telling the hotel you are delayed, landing 22:20 and arriving about 23:15, and asking them to hold the room. Amtrak will not pay the 65 USD rebooking: Amtrak pays no cash compensation for delays, so there is nothing to claim from them for it."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "charges": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 65.0,
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R12",
+      "platform_booking_id": "TD-R12B",
+      "reason": "flight_change"
+     }
+    }
+   ],
+   "inventory": [
+    {
+     "cols": {
+      "seats": 1
+     },
+     "key": "V-DELTA|DL1354",
+     "op": "change"
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R12"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "cols": {
+      "data": {
+       "check_in": "2026-10-29",
+       "check_out": "2026-10-30",
+       "guaranteed": true,
+       "notes": true,
+       "property_policy": {
+        "cancel_free_until": "2026-10-28T18:00:00-04:00",
+        "currency": "USD",
+        "late_cancel_fee_amount": 189.0,
+        "rule_id": "P-HILTON"
+       }
+      }
+     },
+     "key": "V-HILTON-ATLMID|30113313",
+     "op": "change",
+     "presence_only": true
+    },
+    {
+     "cols": {
+      "data": {
+       "fare_class": "Classic",
+       "history": [
+        {
+         "at": "2026-10-29T12:00:00-04:00",
+         "changed_from": "DL1350",
+         "cost": 65.0
+        }
+       ],
+       "pax": 1,
+       "region": "US",
+       "segments": [
+        {
+         "arr": "2026-10-29T22:20:00-04:00",
+         "dep": "2026-10-29T20:15:00-04:00",
+         "flight": "DL1354",
+         "from": "DTW",
+         "to": "ATL"
+        }
+       ]
+      }
+     },
+     "key": "V-DELTA|DLR12B",
+     "op": "change"
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.P-HILTON-HOLD] Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note? (met = 1: Does the agent follow this policy line: [SHOULD P-HILTON-HOLD] [synthetic] A guaranteed reservation is held for late arrival as its property policy says, and the agent should tell the property of a late arrival with hotel_add_note?)",
+    "scope": [
+     "hotel_add_note"
+    ],
+    "tag": "P-HILTON-HOLD"
+   },
+   {
+    "checkpoint": "- [judge.IP-2] Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount? (met = 1: Does the agent follow this policy line: [MUST IP-2] The agent charges the customer, or makes an irreversible change, only where the message explicitly authorizes that action and amount?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "IP-2"
+   },
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-11] Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city? (met = 1: Does the agent follow this policy line: [MUST IP-11] When a status_events row gives the projected arrival of an inbound flight or train, the agent rebooks the earliest flight that departs at least 90 minutes after the later of that arrival and a ready time the customer's message states (times compared with their offsets), and changes it before the booked flight departs; a train counts from its arrival at its station, the same 90 minutes for a station at the airport and for one in the city?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "IP-11"
+   },
+   {
+    "checkpoint": "- [judge.CR-FLIGHT-PORT] Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard? (met = 1: Does the agent follow this policy line: [MUST CR-FLIGHT-PORT] [synthetic] When a flight to the embarkation port will arrive less than 180 minutes before the cruise's all_aboard time, the agent rebooks with flight_change, before the booked flight departs, the earliest flight that departs at or after the booked flight's original departure and arrives at least 180 minutes before all_aboard?)",
+    "scope": [
+     "flight_change"
+    ],
+    "tag": "CR-FLIGHT-PORT"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.CB-FCBA] Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days? (met = 1: Does the agent follow this policy line: [SHOULD CB-FCBA] [V1] A customer who asks how to dispute a charge should be told that the billing error notice must reach the card issuer within 60 days after the first statement that shows the charge, and that Visa lets the issuer file a dispute within 120 calendar days?)",
+    "scope": [
+     "car_cancel",
+     "car_change",
+     "car_dispute_charge",
+     "cruise_cancel",
+     "flight_cancel",
+     "flight_change",
+     "hotel_cancel",
+     "insurance_cancel",
+     "rail_cancel",
+     "respond_chargeback",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CB-FCBA"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.CR-MSC-NAME] Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name? (met = 1: Does the agent follow this policy line: [SHOULD CR-MSC-NAME] [V2] MSC charges a 50 USD name change fee: the agent should say so before asking the line to change a guest's name?)",
+    "scope": [
+     "car_change",
+     "flight_change",
+     "hotel_cancel",
+     "rail_change",
+     "ride_cancel_scheduled"
+    ],
+    "tag": "CR-MSC-NAME"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: States that DLR12B is now on DL1354, departing Detroit 20:15 and landing in Atlanta 22:20, for a fare difference of 65 USD charged to the card, within the 100 USD the customer allowed. (met = 1: In its replies to the customer, does the agent do this: States that DLR12B is now on DL1354, departing Detroit 20:15 and landing in Atlanta 22:20, for a fare difference of 65 USD charged to the card, within the 100 USD the customer allowed.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: States that DL1354 at 20:15 is the earliest flight leaving at least 90 minutes after the train's 18:40 arrival. (met = 1: In its replies to the customer, does the agent do this: States that DL1354 at 20:15 is the earliest flight leaving at least 90 minutes after the train's 18:40 arrival.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: States that Amtrak will not pay the 65 USD rebooking. (met = 1: In its replies to the customer, does the agent do this: States that Amtrak will not pay the 65 USD rebooking.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: States that Amtrak pays no cash compensation for the delay. (met = 1: In its replies to the customer, does the agent do this: States that Amtrak pays no cash compensation for the delay.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   },
+   {
+    "checkpoint": "- [judge.reply.5] In its replies to the customer, does the agent do this: States that the Atlanta hotel 30113313 was told of the late arrival. (met = 1: In its replies to the customer, does the agent do this: States that the Atlanta hotel 30113313 was told of the late arrival.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.5"
+   }
+  ],
+  "message": "My Amtrak train 353 to Detroit has been stopped for about 6 hours for a mechanical check. I was supposed to be in almost 4 hours before my Delta flight to Atlanta (DLR12B) and now I'll miss it. Can you get me on the first flight I can actually make tonight? I'll pay up to $100 extra if I have to. My hotel in Atlanta (conf 30113313) should know I'll be very late. Is there a way to get Amtrak to pay for the rebooking? graham.lowe@example.com, card 5313.",
+  "strict_tables": [],
+  "task": "12_wolverine_six_hours_flight_and_hotel",
+  "token": "8a0f425bed875f0b57f956d2f8737f52"
+ },
+ "instruction": "My Amtrak train 353 to Detroit has been stopped for about 6 hours for a mechanical check. I was supposed to be in almost 4 hours before my Delta flight to Atlanta (DLR12B) and now I'll miss it. Can you get me on the first flight I can actually make tonight? I'll pay up to $100 extra if I have to. My hotel in Atlanta (conf 30113313) should know I'll be very late. Is there a way to get Amtrak to pay for the rebooking? graham.lowe@example.com, card 5313.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R12\": {\n   \"customer_id\": \"C-R12\",\n   \"email\": \"graham.lowe@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Graham Lowe\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"inventory\": {\n  \"V-DELTA|DL1352\": {\n   \"arr\": \"2026-10-29T21:35:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T19:30:00-04:00\",\n   \"dest\": \"ATL\",\n   \"fare_difference\": 30.0,\n   \"kind\": \"flight\",\n   \"origin\": \"DTW\",\n   \"product_id\": \"DL1352\",\n   \"seats\": 5,\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DL1354\": {\n   \"arr\": \"2026-10-29T22:20:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T20:15:00-04:00\",\n   \"dest\": \"ATL\",\n   \"fare_difference\": 65.0,\n   \"kind\": \"flight\",\n   \"origin\": \"DTW\",\n   \"product_id\": \"DL1354\",\n   \"seats\": 2,\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DL1356\": {\n   \"arr\": \"2026-10-29T23:45:00-04:00\",\n   \"currency\": \"USD\",\n   \"dep\": \"2026-10-29T21:40:00-04:00\",\n   \"dest\": \"ATL\",\n   \"fare_difference\": 0.0,\n   \"kind\": \"flight\",\n   \"origin\": \"DTW\",\n   \"product_id\": \"DL1356\",\n   \"seats\": 7,\n   \"vendor_id\": \"V-DELTA\"\n  }\n },\n \"payments\": {\n  \"PM-R12A\": {\n   \"amount\": 64.0,\n   \"card_last4\": \"5313\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R12A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R12B\": {\n   \"amount\": 214.0,\n   \"card_last4\": \"5313\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R12B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R12C\": {\n   \"amount\": 198.0,\n   \"card_last4\": \"5313\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R12C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R12D\": {\n   \"amount\": 189.0,\n   \"card_last4\": \"5313\",\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R12D\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R12A\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R12A\",\n   \"platform_booking_id\": \"TD-R12A\",\n   \"product_type\": \"rail\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 64.0,\n   \"vendor_booking_id\": \"AMR12A\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"TD-R12B\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R12B\",\n   \"platform_booking_id\": \"TD-R12B\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 214.0,\n   \"vendor_booking_id\": \"DLR12B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R12C\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"details\": {\n    \"pax\": 1,\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R12C\",\n   \"platform_booking_id\": \"TD-R12C\",\n   \"product_type\": \"flight\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 198.0,\n   \"vendor_booking_id\": \"DLR12C\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R12D\": {\n   \"created_at\": \"2026-09-01T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R12\",\n   \"details\": {\n    \"check_in\": \"2026-10-29\"\n   },\n   \"payment_id\": \"PM-R12D\",\n   \"platform_booking_id\": \"TD-R12D\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 189.0,\n   \"vendor_booking_id\": \"30113313\",\n   \"vendor_id\": \"V-HILTON-ATLMID\"\n  }\n },\n \"status_events\": {\n  \"SE-R12A\": {\n   \"data\": {\n    \"cause\": \"mechanical assessment\",\n    \"delay_min\": 360,\n    \"projected_arrival\": \"2026-10-29T18:40:00-04:00\",\n    \"scheduled_arrival\": \"2026-10-29T12:40:00-04:00\",\n    \"status\": \"delayed\",\n    \"train\": \"353\"\n   },\n   \"event_id\": \"SE-R12A\",\n   \"service_date\": \"2026-10-29\",\n   \"service_id\": \"353\",\n   \"vendor_id\": \"V-AMTRAK\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-AMTRAK|AMR12A\": {\n   \"data\": {\n    \"date\": \"2026-10-29\",\n    \"dep\": \"2026-10-29T05:00:00-05:00\",\n    \"fare_class\": \"Value\",\n    \"from\": \"CHI\",\n    \"region\": \"US\",\n    \"to\": \"DET\",\n    \"train\": \"353\"\n   },\n   \"platform_booking_id\": \"TD-R12A\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"AMR12A\",\n   \"vendor_id\": \"V-AMTRAK\"\n  },\n  \"V-DELTA|DLR12B\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-29T18:35:00-04:00\",\n      \"dep\": \"2026-10-29T16:30:00-04:00\",\n      \"flight\": \"DL1350\",\n      \"from\": \"DTW\",\n      \"to\": \"ATL\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R12B\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLR12B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-DELTA|DLR12C\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-11-03T10:05:00-05:00\",\n      \"dep\": \"2026-11-03T08:00:00-05:00\",\n      \"flight\": \"DL1351\",\n      \"from\": \"ATL\",\n      \"to\": \"DTW\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R12C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"DLR12C\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-HILTON-ATLMID|30113313\": {\n   \"data\": {\n    \"check_in\": \"2026-10-29\",\n    \"check_out\": \"2026-10-30\",\n    \"guaranteed\": true,\n    \"property_policy\": {\n     \"cancel_free_until\": \"2026-10-28T18:00:00-04:00\",\n     \"currency\": \"USD\",\n     \"late_cancel_fee_amount\": 189.0,\n     \"rule_id\": \"P-HILTON\"\n    }\n   },\n   \"platform_booking_id\": \"TD-R12D\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"30113313\",\n   \"vendor_id\": \"V-HILTON-ATLMID\"\n  }\n }\n}\n",
+ "places": {},
+ "secret": "8a0f425bed875f0b57f956d2f8737f52\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/12_wolverine_six_hours_flight_and_hotel\"\ndescription = \"Amtrak status (projected 18:40) and compute_entitlement (none) -> Delta search and change to DL1354, the first flight 90 minutes after (USD 65, within the USD 100 authorized) -> Hilton note with the new arrival time.\"\nkeywords = [\"Amtrak\", \"US DOT\"]\n\n[metadata]\nwalk = \"12_wolverine_six_hours_flight_and_hotel__right\"\nchain = \"Amtrak status (projected 18:40) and compute_entitlement (none) -> Delta search and change to DL1354, the first flight 90 minutes after (USD 65, within the USD 100 authorized) -> Hilton note with the new arrival time.\"\npersona = \"solo traveller\"\nregimes = [\"Amtrak\", \"US DOT\"]\nvendors = [\"V-AMTRAK\", \"V-DELTA\", \"V-HILTON-ATLMID\"]\nvendors_written = [\"V-DELTA\", \"V-HILTON-ATLMID\"]\ntrap_families = [\"identity\", \"liability\", \"time\"]\ntraps = [\"change_return_flight\", \"free_later_flight\", \"refund_amtrak_for_rebooking\"]\ncode_guards_on_route = [\"CV-SEATS\", \"IP-1\", \"IP-1b\", \"P-DELTA\", \"P-DELTA-BASIC\"]\njudge_items_on_route = [\"CB-FCBA\", \"CR-FCC\", \"CR-FLIGHT-PORT\", \"CR-ITIN\", \"CR-MSC-NAME\", \"IP-11\", \"IP-2\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"P-HILTON-HOLD\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\", \"reply.5\"]\ncomplaint = \"https://www.reddit.com/r/Amtrak/comments/1s88x1s/6h_delay_on_the_wolverine_missed_flight/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "DLR12B"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "DLR12B",
+     "card_last4": "5313",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "graham.lowe@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id"
+    },
+    "name": "get_customer_bookings"
+   },
+   {
+    "args": {
+     "date": "2026-10-29",
+     "train": "353",
+     "vendor_id": "V-AMTRAK"
+    },
+    "name": "rail_get_train_status"
+   },
+   {
+    "args": {
+     "platform_booking_id": "TD-R12A"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "record_locator": "DLR12B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "date": "2026-10-29",
+     "dest": "ATL",
+     "origin": "DTW",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_search"
+   },
+   {
+    "args": {
+     "max_fare_difference": 100.0,
+     "new_flight": "DL1354",
+     "record_locator": "DLR12B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_change"
+   },
+   {
+    "args": {
+     "confirmation": "30113313",
+     "vendor_id": "V-HILTON-ATLMID"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "confirmation": "30113313",
+     "text": "Guest delayed by a train breakdown; now landing 22:20, arriving about 23:15. Please hold the room.",
+     "vendor_id": "V-HILTON-ATLMID"
+    },
+    "name": "hotel_add_note"
+   },
+   {
+    "args": {
+     "text": "Yes, you are rebooked: DLR12B is now on DL1354, departing Detroit at 20:15 and landing in Atlanta at 22:20, for a fare difference of 65 USD charged to your card, within the 100 USD you allowed. Train 353 is now due into Detroit at 18:40, and DL1354 is the earliest flight leaving at least 90 minutes after that (DL1352 at 19:30 is too tight). I added a note to your Atlanta hotel reservation 30113313 telling the hotel you are delayed, landing 22:20 and arriving about 23:15, and asking them to hold the room. Amtrak will not pay the 65 USD rebooking: Amtrak pays no cash compensation for delays, so there is nothing to claim from them for it."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}

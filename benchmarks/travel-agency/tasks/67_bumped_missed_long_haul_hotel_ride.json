@@ -1,0 +1,476 @@
+{
+ "alts": {
+  "bookings_listed_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR67A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR67A",
+      "card_last4": "3390",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "priya.raman@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id"
+     },
+     "name": "get_customer_bookings"
+    },
+    {
+     "args": {
+      "record_locator": "LHR67A",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$3.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$4.amount",
+      "currency": "EUR",
+      "message": "EU261 Art 4: passenger denied boarding on LH1130 LIS-BCN 28 Oct; band under 1500 km.",
+      "platform_booking_id": "$3.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "record_locator": "DLR67B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "amount": 0.0,
+      "currency": "USD",
+      "message": "Passenger missed DL169 BCN-LAX on 28 Oct after being denied boarding on an earlier separate ticket; asks a no-show waiver.",
+      "platform_booking_id": "$6.platform_booking_id",
+      "request_type": "waiver_request",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "confirmation": "LKR67C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "Barcelona El Prat airport",
+      "pickup": "$8.data.address",
+      "pickup_time": "2026-10-30T06:00:00+01:00",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "text": "Lufthansa denied you boarding on LH1130, a flight under 1500 km, so the EU261 compensation is 250 EUR. I filed that claim with Lufthansa. No EU261 compensation is owed or claimed for the Delta flight DLR67B, and not the 600 EUR you asked about, because it was a separate ticket and is not part of the Lufthansa journey. I asked Delta for a no-show waiver on DLR67B (TD-R67B); no waiver is promised. Your Uber from the airport hotel LKR67C to the airport is booked for 6:00 on 30 October, Barcelona time."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  },
+  "ride_first.json": {
+   "calls": [
+    {
+     "args": {
+      "query": "LHR67A"
+     },
+     "name": "find_customer"
+    },
+    {
+     "args": {
+      "booking_id": "LHR67A",
+      "card_last4": "3390",
+      "customer_id": "$0.matches.0.customer_id",
+      "email": "priya.raman@example.com"
+     },
+     "name": "verify_identity"
+    },
+    {
+     "args": {
+      "confirmation": "LKR67C",
+      "vendor_id": "V-HTL-LAKESIDE"
+     },
+     "name": "hotel_get_reservation"
+    },
+    {
+     "args": {
+      "customer_id": "$0.matches.0.customer_id",
+      "dropoff": "BCN Terminal 1",
+      "pickup": "$2.data.address",
+      "pickup_time": "2026-10-30T06:00:00+01:00",
+      "vendor_id": "V-UBER"
+     },
+     "name": "ride_schedule"
+    },
+    {
+     "args": {
+      "record_locator": "LHR67A",
+      "vendor_id": "V-LH"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "platform_booking_id": "$4.platform_booking_id"
+     },
+     "name": "compute_entitlement"
+    },
+    {
+     "args": {
+      "amount": "$5.amount",
+      "currency": "EUR",
+      "message": "EU261 Art 4: passenger denied boarding on LH1130 LIS-BCN 28 Oct; band under 1500 km.",
+      "platform_booking_id": "$4.platform_booking_id",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "record_locator": "DLR67B",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "flight_get_booking"
+    },
+    {
+     "args": {
+      "amount": 742.0,
+      "currency": "USD",
+      "message": "Passenger missed DL169 BCN-LAX on 28 Oct after being denied boarding on an earlier separate ticket; asks a no-show waiver.",
+      "platform_booking_id": "$7.platform_booking_id",
+      "request_type": "waiver_request",
+      "vendor_id": "V-DELTA"
+     },
+     "name": "vendor_send"
+    },
+    {
+     "args": {
+      "text": "Lufthansa denied you boarding on LH1130, a flight under 1500 km, so the EU261 compensation is 250 EUR. I filed that claim with Lufthansa. No EU261 compensation is owed or claimed for the Delta flight DLR67B, and not the 600 EUR you asked about, because it was a separate ticket and is not part of the Lufthansa journey. I asked Delta for a no-show waiver on DLR67B (TD-R67B); no waiver is promised. Your Uber from the airport hotel LKR67C to the airport is booked for 6:00 on 30 October, Barcelona time."
+     },
+     "name": "reply_to_user"
+    }
+   ]
+  }
+ },
+ "grade": {
+  "claims_on_file": {},
+  "expected_diff": {
+   "platform_bookings": [
+    {
+     "op": "add",
+     "row": {
+      "created_at": "2026-10-29T12:00:00-04:00",
+      "currency": "USD",
+      "customer_id": "C-R67",
+      "details": {},
+      "payment_id": "PM-R67C",
+      "product_type": "ride",
+      "status": "scheduled",
+      "ticket_group": null,
+      "total": 41.0,
+      "vendor_id": "V-UBER"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "op": "add",
+     "row": {
+      "customer_id": "C-R67"
+     }
+    }
+   ],
+   "vendor_bookings": [
+    {
+     "op": "add",
+     "row": {
+      "data": {
+       "driver_matched": false,
+       "dropoff": "BCN Terminal 1",
+       "est_price": 41.0,
+       "pickup": "Hotel Lakeside, Carrer de Prat 12, El Prat de Llobregat",
+       "pickup_time": "2026-10-30T06:00:00+01:00"
+      },
+      "status": "scheduled",
+      "vendor_id": "V-UBER"
+     }
+    }
+   ],
+   "vendor_threads": [
+    {
+     "op": "add",
+     "row": {
+      "amount": 250.0,
+      "currency": "EUR",
+      "platform_booking_id": "TD-R67A",
+      "reply_status": "approved",
+      "reply_text": "Compensation approved. Lufthansa pays it to the passenger by bank transfer.",
+      "request_type": "compensation_claim",
+      "vendor_id": "V-LH"
+     }
+    },
+    {
+     "op": "add",
+     "row": {
+      "platform_booking_id": "TD-R67B",
+      "reply_status": "refused",
+      "reply_text": "No waiver in effect for this flight.",
+      "request_type": "waiver_request",
+      "vendor_id": "V-DELTA"
+     }
+    }
+   ]
+  },
+  "judge_items": [
+   {
+    "checkpoint": "- [judge.IP-3b] Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed? (met = 1: Does the agent follow this policy line: [MUST IP-3b] The agent never tells the customer what the supplier said unless the supplier agreed?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-3b"
+   },
+   {
+    "checkpoint": "- [judge.IP-5] Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit? (met = 1: Does the agent follow this policy line: [MUST IP-5] Where law gives a cash refund right, the agent discloses it before offering any credit?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-5"
+   },
+   {
+    "checkpoint": "- [judge.IP-3] Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)? (met = 1: Does the agent follow this policy line: [MUST IP-3] When a loss is a supplier fault and a cost is at stake for TripDesk (money TripDesk paid or owes the customer for the supplier's failure) that no vendor promise covers, the agent records it with reclassify_cancellation and files a claim for that cost with the supplier through vendor_send; a promise a vendor's staff made is escalated per IP-9c instead, and a supplier fault with no TripDesk cost needs no claim under this sentence (a sentence that names its own claim, such as CR-CAR-NOCAR or SC-LAKESIDE-2, still applies)?)",
+    "scope": [
+     "reclassify_cancellation",
+     "vendor_send"
+    ],
+    "tag": "IP-3"
+   },
+   {
+    "checkpoint": "- [judge.IP-6] Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review? (met = 1: Does the agent follow this policy line: [MUST IP-6] The agent never makes a refund the customer is owed depend on dropping a dispute, signing a waiver or writing a review?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-6"
+   },
+   {
+    "checkpoint": "- [judge.IP-8] Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not? (met = 1: Does the agent follow this policy line: [MUST IP-8] The agent never promises discretionary vendor compensation or says a vendor agreed when it has not?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "IP-8"
+   },
+   {
+    "checkpoint": "- [judge.IP-12b] Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise? (met = 1: Does the agent follow this policy line: [MUST IP-12b] An airport pickup is 20 minutes after the flight's scheduled arrival, and a station pickup after a train 20 minutes after the train's arrival (its projected arrival where status_events gives one), unless the customer says otherwise?)",
+    "scope": [
+     "ride_schedule"
+    ],
+    "tag": "IP-12b"
+   },
+   {
+    "checkpoint": "- [judge.CV-LOST-ITEM] Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value? (met = 1: Does the agent follow this policy line: [MUST CV-LOST-ITEM] [synthetic] A lost item is reported to the ride vendor through vendor_send with request_type lost_item, and the agent never promises the item's return or pays its value?)",
+    "scope": [
+     "issue_refund",
+     "issue_refund_legacy",
+     "vendor_send"
+    ],
+    "tag": "CV-LOST-ITEM"
+   },
+   {
+    "checkpoint": "- [judge.CR-ITIN] Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation? (met = 1: Does the agent follow this policy line: [MUST CR-ITIN] [V1] A cruise line may change the itinerary, ports and times without liability: when an itinerary_change moves the disembarkation, the agent moves a flight home that departs less than 180 minutes [synthetic] after the new disembark time with flight_change to the earliest flight departing at least 180 minutes after it, the cost charged to the customer only within the amount the message authorizes (IP-2), and asks the line for no compensation?)",
+    "scope": [
+     "flight_change",
+     "vendor_send"
+    ],
+    "tag": "CR-ITIN"
+   },
+   {
+    "checkpoint": "- [judge.GP-VENDOR-REPLY] Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands? (met = 1: Does the agent follow this policy line: [MUST GP-VENDOR-REPLY] [synthetic] A vendor answers vendor_send from its own records of the booking: KU's refund_status reply names the refund it paid on that booking or says none was paid, and River North answers a fee_waiver by its terms (SC-RIVERNORTH) and refuses it, so the agent tells the customer the fee stands?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-VENDOR-REPLY"
+   },
+   {
+    "checkpoint": "- [judge.GP-NO-TERMS] Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)? (met = 1: Does the agent follow this policy line: [MUST GP-NO-TERMS] [synthetic] A write tool changes nothing and answers with an error when the booking lacks the terms or times it applies (hotel_cancel without a property_policy, flight_cancel without cancel terms for the fare, cruise_cancel without a cancel_schedule band, rail_change for a fare with no change_fee): the agent never guesses the terms, and asks the vendor with vendor_send only where it still needs them (a refund the law gives, such as P-DOT-REFUND, needs no fare terms)?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "GP-NO-TERMS"
+   },
+   {
+    "checkpoint": "- [judge.CR-FCC] Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so? (met = 1: Does the agent follow this policy line: [MUST CR-FCC] [V1] A future cruise credit offered when the line cancels or fails to perform is an alternative the guest may decline: the agent offers the refund in money first (CR-FMC-REFUND), paid with issue_refund, and never accepts the line_offer cruise_get_booking shows without the message saying so?)",
+    "scope": [
+     "*"
+    ],
+    "tag": "CR-FCC"
+   },
+   {
+    "checkpoint": "- [judge.WC-ES-CARE] Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them? (met = 1: Does the agent follow this policy line: [MUST WC-ES-CARE] [V1] When a Eurostar journey cannot continue on the day, Eurostar reimburses reasonable overnight accommodation, food, transport between station and accommodation and calls, claimed within three months: the receipts are sent through vendor_send with request_type care_expense_claim, and TripDesk never pays them?)",
+    "scope": [
+     "vendor_send"
+    ],
+    "tag": "WC-ES-CARE"
+   },
+   {
+    "checkpoint": "- [judge.reply.1] In its replies to the customer, does the agent do this: Says the EU261 compensation is 250 EUR from Lufthansa for the LH1130 denied boarding (a flight under 1500 km). (met = 1: In its replies to the customer, does the agent do this: Says the EU261 compensation is 250 EUR from Lufthansa for the LH1130 denied boarding (a flight under 1500 km).)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.1"
+   },
+   {
+    "checkpoint": "- [judge.reply.2] In its replies to the customer, does the agent do this: Says no EU261 compensation (not the 600 EUR asked) is owed or claimed for the separately ticketed Delta flight DLR67B. (met = 1: In its replies to the customer, does the agent do this: Says no EU261 compensation (not the 600 EUR asked) is owed or claimed for the separately ticketed Delta flight DLR67B.)",
+    "gate": true,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.2"
+   },
+   {
+    "checkpoint": "- [judge.reply.3] In its replies to the customer, does the agent do this: Says the reason is that DLR67B is a separate ticket and not part of the Lufthansa journey. (met = 1: In its replies to the customer, does the agent do this: Says the reason is that DLR67B is a separate ticket and not part of the Lufthansa journey.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.3"
+   },
+   {
+    "checkpoint": "- [judge.reply.4] In its replies to the customer, does the agent do this: Says the no-show waiver for DLR67B (TD-R67B) was asked of Delta and that no waiver is promised. (met = 1: In its replies to the customer, does the agent do this: Says the no-show waiver for DLR67B (TD-R67B) was asked of Delta and that no waiver is promised.)",
+    "gate": false,
+    "scope": [
+     "*"
+    ],
+    "tag": "reply.4"
+   }
+  ],
+  "message": "Lufthansa bumped me off LH1130 Lisbon to Barcelona yesterday (LHR67A) and I got there at 7 PM, so I missed my separate Delta flight to Los Angeles DLR67B at 13:15. Delta marked me no-show. I need EU261 for the whole thing, the long haul is 600, and Delta should waive the no-show. I am at the airport hotel you booked tonight (LKR67C); book me an Uber from there to BCN for 6:00 tomorrow (Barcelona time). priya.raman@example.com, card 3390.",
+  "strict_tables": [],
+  "task": "67_bumped_missed_long_haul_hotel_ride",
+  "token": "3c574d771f4e5ce4d05749ceb7f79441"
+ },
+ "instruction": "Lufthansa bumped me off LH1130 Lisbon to Barcelona yesterday (LHR67A) and I got there at 7 PM, so I missed my separate Delta flight to Los Angeles DLR67B at 13:15. Delta marked me no-show. I need EU261 for the whole thing, the long haul is 600, and Delta should waive the no-show. I am at the airport hotel you booked tonight (LKR67C); book me an Uber from there to BCN for 6:00 tomorrow (Barcelona time). priya.raman@example.com, card 3390.\n",
+ "overlay": "{\n \"customers\": {\n  \"C-R67\": {\n   \"customer_id\": \"C-R67\",\n   \"email\": \"priya.raman@example.com\",\n   \"loyalty_program\": null,\n   \"loyalty_tier\": null,\n   \"name\": \"Priya Raman\",\n   \"notes\": null,\n   \"phone\": null\n  }\n },\n \"payments\": {\n  \"PM-R67A\": {\n   \"amount\": 189.0,\n   \"card_last4\": \"3390\",\n   \"created_at\": \"2026-09-01T10:00:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R67\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R67A\",\n   \"status\": \"captured\"\n  },\n  \"PM-R67B\": {\n   \"amount\": 742.0,\n   \"card_last4\": \"3390\",\n   \"created_at\": \"2026-09-03T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R67\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R67B\",\n   \"status\": \"captured\"\n  },\n  \"PM-R67C\": {\n   \"amount\": 134.0,\n   \"card_last4\": \"3390\",\n   \"created_at\": \"2026-10-28T20:00:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R67\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R67C\",\n   \"status\": \"captured\"\n  },\n  \"PM-R67X\": {\n   \"amount\": 118.0,\n   \"card_last4\": \"3390\",\n   \"created_at\": \"2026-09-01T10:05:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R67\",\n   \"dispute_status\": \"none\",\n   \"merchant_of_record\": \"platform\",\n   \"method\": \"credit_card\",\n   \"payment_id\": \"PM-R67X\",\n   \"status\": \"captured\"\n  }\n },\n \"platform_bookings\": {\n  \"TD-R67A\": {\n   \"created_at\": \"2026-09-01T10:00:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R67\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R67A\",\n   \"platform_booking_id\": \"TD-R67A\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 189.0,\n   \"vendor_booking_id\": \"LHR67A\",\n   \"vendor_id\": \"V-LH\"\n  },\n  \"TD-R67B\": {\n   \"created_at\": \"2026-09-03T10:00:00-04:00\",\n   \"currency\": \"USD\",\n   \"customer_id\": \"C-R67\",\n   \"details\": {\n    \"region\": \"US\"\n   },\n   \"payment_id\": \"PM-R67B\",\n   \"platform_booking_id\": \"TD-R67B\",\n   \"product_type\": \"flight\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 742.0,\n   \"vendor_booking_id\": \"DLR67B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"TD-R67C\": {\n   \"created_at\": \"2026-10-28T20:00:00+01:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R67\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R67C\",\n   \"platform_booking_id\": \"TD-R67C\",\n   \"product_type\": \"hotel\",\n   \"status\": \"confirmed\",\n   \"ticket_group\": null,\n   \"total\": 134.0,\n   \"vendor_booking_id\": \"LKR67C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"TD-R67X\": {\n   \"created_at\": \"2026-09-01T10:05:00+02:00\",\n   \"currency\": \"EUR\",\n   \"customer_id\": \"C-R67\",\n   \"details\": {\n    \"region\": \"EU\"\n   },\n   \"payment_id\": \"PM-R67X\",\n   \"platform_booking_id\": \"TD-R67X\",\n   \"product_type\": \"hotel\",\n   \"status\": \"completed\",\n   \"ticket_group\": null,\n   \"total\": 118.0,\n   \"vendor_booking_id\": \"LKR67X\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  }\n },\n \"vendor_bookings\": {\n  \"V-DELTA|DLR67B\": {\n   \"data\": {\n    \"fare_class\": \"Classic\",\n    \"pax\": 1,\n    \"region\": \"US\",\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-28T16:20:00-07:00\",\n      \"dep\": \"2026-10-28T13:15:00+01:00\",\n      \"flight\": \"DL169\",\n      \"from\": \"BCN\",\n      \"to\": \"LAX\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R67B\",\n   \"status\": \"no_show\",\n   \"vendor_booking_id\": \"DLR67B\",\n   \"vendor_id\": \"V-DELTA\"\n  },\n  \"V-HTL-LAKESIDE|LKR67C\": {\n   \"data\": {\n    \"address\": \"Hotel Lakeside, Carrer de Prat 12, El Prat de Llobregat\",\n    \"check_in\": \"2026-10-29\",\n    \"check_out\": \"2026-10-30\",\n    \"city\": \"Barcelona airport\"\n   },\n   \"platform_booking_id\": \"TD-R67C\",\n   \"status\": \"confirmed\",\n   \"vendor_booking_id\": \"LKR67C\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-HTL-LAKESIDE|LKR67X\": {\n   \"data\": {\n    \"address\": \"Hotel Lakeside, Rua Augusta 40, Lisbon\",\n    \"check_in\": \"2026-10-27\",\n    \"check_out\": \"2026-10-28\",\n    \"city\": \"Lisbon\"\n   },\n   \"platform_booking_id\": \"TD-R67X\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LKR67X\",\n   \"vendor_id\": \"V-HTL-LAKESIDE\"\n  },\n  \"V-LH|LHR67A\": {\n   \"data\": {\n    \"denied_boarding\": true,\n    \"distance_km\": 1000,\n    \"extraordinary\": false,\n    \"fare_class\": \"Light\",\n    \"intra_eu\": true,\n    \"pax\": 1,\n    \"region\": \"EU\",\n    \"reroute\": {\n     \"arr\": \"2026-10-28T19:10:00+01:00\",\n     \"dep\": \"2026-10-28T17:05:00+01:00\",\n     \"flight\": \"LH1138\"\n    },\n    \"segments\": [\n     {\n      \"arr\": \"2026-10-28T11:05:00+01:00\",\n      \"dep\": \"2026-10-28T08:00:00+00:00\",\n      \"flight\": \"LH1130\",\n      \"from\": \"LIS\",\n      \"to\": \"BCN\"\n     }\n    ]\n   },\n   \"platform_booking_id\": \"TD-R67A\",\n   \"status\": \"travelled\",\n   \"vendor_booking_id\": \"LHR67A\",\n   \"vendor_id\": \"V-LH\"\n  }\n }\n}\n",
+ "places": {
+  "PL-7EB2D55D": {
+   "aliases": [
+    "hotel lakeside rua augusta 40 lisbon"
+   ],
+   "text": "Hotel Lakeside, Rua Augusta 40, Lisbon"
+  },
+  "PL-C2BBB441": {
+   "aliases": [
+    "hotel lakeside carrer de prat 12 el prat de llobregat"
+   ],
+   "text": "Hotel Lakeside, Carrer de Prat 12, El Prat de Llobregat"
+  }
+ },
+ "secret": "3c574d771f4e5ce4d05749ceb7f79441\n",
+ "task_toml": "schema_version = \"1.4\"\n\n[task]\nname = \"leibler/67_bumped_missed_long_haul_hotel_ride\"\ndescription = \"Lufthansa booking read (denied boarding, 1000 km) -> EU261 entitlement 250 claimed from Lufthansa -> separately ticketed Delta flight read (no-show) -> no-show waiver asked of Delta (asked) -> tonight's airport hotel read -> Uber booked from its address to BCN for 06:00 on 30 October.\"\nkeywords = [\"EU261\", \"US DOT\"]\n\n[metadata]\nwalk = \"67_bumped_missed_long_haul_hotel_ride__right\"\nchain = \"Lufthansa booking read (denied boarding, 1000 km) -> EU261 entitlement 250 claimed from Lufthansa -> separately ticketed Delta flight read (no-show) -> no-show waiver asked of Delta (asked) -> tonight's airport hotel read -> Uber booked from its address to BCN for 06:00 on 30 October.\"\npersona = \"solo\"\nregimes = [\"EU261\", \"US DOT\"]\nvendors = [\"V-DELTA\", \"V-HTL-LAKESIDE\", \"V-LH\", \"V-UBER\"]\nvendors_written = [\"V-LH\", \"V-DELTA\", \"V-UBER\"]\ntrap_families = [\"identity\", \"liability\", \"time\"]\ntraps = [\"claim_on_delta_booking\", \"long_haul_compensation\", \"refund_no_show\", \"ride_this_morning\"]\ncode_guards_on_route = [\"IP-1\", \"IP-1b\"]\njudge_items_on_route = [\"CR-FCC\", \"CR-ITIN\", \"CV-LOST-ITEM\", \"GP-NO-TERMS\", \"GP-VENDOR-REPLY\", \"IP-12b\", \"IP-3\", \"IP-3b\", \"IP-5\", \"IP-6\", \"IP-8\", \"WC-ES-CARE\", \"claims\", \"reply.1\", \"reply.2\", \"reply.3\", \"reply.4\"]\ncomplaint = \"https://www.reddit.com/r/travel/comments/1hdmkgx/vueling_is_complete_trash/\"\nguards_sha256_16 = \"d531483f05948f16\"\n\n[agent]\ntimeout_sec = 1800.0\n\n[verifier]\ntimeout_sec = 900.0\n\n[verifier.env]\nKULLBACK_JUDGE_MODEL = \"${KULLBACK_JUDGE_MODEL:-}\"\nKULLBACK_JUDGE_BASE_URL = \"${KULLBACK_JUDGE_BASE_URL:-}\"\nKULLBACK_JUDGE_API_KEY = \"${KULLBACK_JUDGE_API_KEY:-}\"\nANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY:-}\"\nOPENAI_API_KEY = \"${OPENAI_API_KEY:-}\"\nGEMINI_API_KEY = \"${GEMINI_API_KEY:-}\"\nGOOGLE_API_KEY = \"${GOOGLE_API_KEY:-}\"\n\n[environment]\nbuild_timeout_sec = 900.0\ncpus = 1\nmemory_mb = 2048\n\n[[environment.mcp_servers]]\nname = \"tools\"\ntransport = \"stdio\"\ncommand = \"tools\"\nargs = [\"mcp\"]\n\n[[artifacts]]\nsource = \"/srv/state/calls.jsonl\"\nservice = \"tools\"\n",
+ "walk": {
+  "calls": [
+   {
+    "args": {
+     "query": "LHR67A"
+    },
+    "name": "find_customer"
+   },
+   {
+    "args": {
+     "booking_id": "LHR67A",
+     "card_last4": "3390",
+     "customer_id": "$0.matches.0.customer_id",
+     "email": "priya.raman@example.com"
+    },
+    "name": "verify_identity"
+   },
+   {
+    "args": {
+     "record_locator": "LHR67A",
+     "vendor_id": "V-LH"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "platform_booking_id": "$2.platform_booking_id"
+    },
+    "name": "compute_entitlement"
+   },
+   {
+    "args": {
+     "amount": "$3.amount",
+     "currency": "EUR",
+     "message": "EU261 Art 4: passenger denied boarding on LH1130 LIS-BCN 28 Oct; band under 1500 km.",
+     "platform_booking_id": "$2.platform_booking_id",
+     "request_type": "compensation_claim",
+     "vendor_id": "V-LH"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "record_locator": "DLR67B",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "flight_get_booking"
+   },
+   {
+    "args": {
+     "amount": 742.0,
+     "currency": "USD",
+     "message": "Passenger missed DL169 BCN-LAX on 28 Oct after being denied boarding on an earlier separate ticket; asks a no-show waiver.",
+     "platform_booking_id": "$5.platform_booking_id",
+     "request_type": "waiver_request",
+     "vendor_id": "V-DELTA"
+    },
+    "name": "vendor_send"
+   },
+   {
+    "args": {
+     "confirmation": "LKR67C",
+     "vendor_id": "V-HTL-LAKESIDE"
+    },
+    "name": "hotel_get_reservation"
+   },
+   {
+    "args": {
+     "customer_id": "$0.matches.0.customer_id",
+     "dropoff": "BCN Terminal 1",
+     "pickup": "$7.data.address",
+     "pickup_time": "2026-10-30T06:00:00+01:00",
+     "vendor_id": "V-UBER"
+    },
+    "name": "ride_schedule"
+   },
+   {
+    "args": {
+     "text": "Lufthansa denied you boarding on LH1130, a flight under 1500 km, so the EU261 compensation is 250 EUR. I filed that claim with Lufthansa. No EU261 compensation is owed or claimed for the Delta flight DLR67B, and not the 600 EUR you asked about, because it was a separate ticket and is not part of the Lufthansa journey. I asked Delta for a no-show waiver on DLR67B (TD-R67B); no waiver is promised. Your Uber from the airport hotel LKR67C to the airport is booked for 6:00 on 30 October, Barcelona time."
+    },
+    "name": "reply_to_user"
+   }
+  ]
+ }
+}
