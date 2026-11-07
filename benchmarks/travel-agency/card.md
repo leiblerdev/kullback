@@ -110,9 +110,8 @@ A run **passes (reward 1.0) only if every check below holds**, else 0.0.
   escalation id?"). They only move `shaped_reward`.
 - **A refused write counts for nothing.** Only writes the database took are checked.
 - **A guard that cannot answer** leaves the run unscored, unless another check already failed it.
-- **Not yet judged:** the No false claims question is new and has not been run through a judge model. The table in
-  [RESULTS.md](RESULTS.md) asks no judge: its rewards are the code checks alone, and a `judge.*` name there is a required
-  item that failed in code because the walk sent no reply. This card reports no judged score.
+- **Not yet judged:** the No false claims question is new and has not been run through a judge model. This card reports
+  no judged score.
 - **Graded by the tool server:** the grade is computed outside the agent's container, from the calls the server logged. The
   limits are under Limitations.
 
