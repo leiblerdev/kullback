@@ -80,8 +80,7 @@ def export(out: Path) -> str:
     for source in sorted((HERE / "tasks").glob("*.json")):
         write_task(json.loads(source.read_text(encoding="utf-8")), out / source.stem, shared, head)
     copy(HERE / "card.md", out / "README.md")
-    for name in ("RESULTS.md", "tasks.jsonl"):
-        copy(HERE / name, out / name)
+    copy(HERE / "tasks.jsonl", out / "tasks.jsonl")
     return digest(out)
 
 
