@@ -27,16 +27,19 @@ HARBOR_FILES = (
 )
 
 
-@pytest.fixture(scope="module")
-def export(tmp_path_factory):
-    out = tmp_path_factory.mktemp("harbor")
-    done = subprocess.run(
+def run_export(out: Path, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [sys.executable, "-I", str(BENCHMARK / "export.py"), "--out", str(out)],
         capture_output=True,
         text=True,
-        check=True,
+        check=check,
     )
-    return out, done.stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def export(tmp_path_factory):
+    out = tmp_path_factory.mktemp("harbor")
+    return out, run_export(out).stdout.strip()
 
 
 def test_export_writes_the_recorded_bytes(export):
@@ -70,3 +73,38 @@ def test_the_served_grade_file_equals_the_verifiers(export):
         if (out / task / "environment/world/grade.json").read_bytes() != (out / task / "tests/grade.json").read_bytes()
     ]
     assert differ == []
+
+
+def test_exporting_over_an_earlier_export_removes_stale_files_and_keeps_dot_folders(export, tmp_path):
+    _, fresh = export
+    out = tmp_path / "harbor"
+    run_export(out)
+    (out / "RESULTS.md").write_text("stale\n", encoding="utf-8")
+    (out / "old-task" / "tests").mkdir(parents=True)
+    (out / "old-task" / "tests" / "grade.json").write_text("{}\n", encoding="utf-8")
+    (out / ".git" / "objects").mkdir(parents=True)
+    (out / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    again = run_export(out).stdout.strip()
+    assert not (out / "RESULTS.md").exists()
+    assert not (out / "old-task").exists()
+    assert (out / ".git" / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/main\n"
+    assert (out / ".git" / "objects").is_dir()
+    assert again == fresh
+
+
+def test_exporting_to_a_symlink_of_an_earlier_export_gives_the_same_digest(export, tmp_path):
+    _, fresh = export
+    real = tmp_path / "real"
+    run_export(real)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    again = run_export(link).stdout.strip()
+    assert link.is_symlink()
+    assert again == fresh
+
+
+def test_export_refuses_a_folder_that_holds_files_and_no_earlier_export(tmp_path):
+    (tmp_path / "keep.txt").write_text("mine\n", encoding="utf-8")
+    done = run_export(tmp_path, check=False)
+    assert done.returncode != 0
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["keep.txt"]

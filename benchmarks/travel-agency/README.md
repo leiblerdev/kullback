@@ -2,7 +2,7 @@
 
 65 tasks for a support agent at TripDesk, a travel agency that sold a trip it does not operate. Every task is a
 broken trip from a real public complaint, graded in code on what the agent changed. [card.md](card.md) has the full
-description, scoring and judge setup, and [RESULTS.md](RESULTS.md) has the host check.
+description, scoring and judge setup.
 
 The tasks share one environment, so it is kept once:
 
