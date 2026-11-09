@@ -74,7 +74,23 @@ def digest(out: Path) -> str:
     return sha.hexdigest()
 
 
+def clear(out: Path) -> None:
+    """Empty the output folder so no file from an earlier export stays behind.
+
+    Only an empty folder or an earlier export (it holds tasks.jsonl) is cleared, and never one holding this benchmark.
+    """
+    out = out.resolve()
+    if out == HERE or out in HERE.parents:
+        raise SystemExit(f"refusing to clear {out}: it holds the benchmark source")
+    if not out.exists():
+        return
+    if any(out.iterdir()) and not (out / "tasks.jsonl").is_file():
+        raise SystemExit(f"refusing to clear {out}: it is not empty and holds no earlier export")
+    shutil.rmtree(out)
+
+
 def export(out: Path) -> str:
+    clear(out)
     shared = json.loads((ENV / "grading.json").read_text(encoding="utf-8"))
     head = (ENV / "instruction_head.md").read_text(encoding="utf-8")
     for source in sorted((HERE / "tasks").glob("*.json")):

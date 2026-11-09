@@ -27,16 +27,19 @@ HARBOR_FILES = (
 )
 
 
-@pytest.fixture(scope="module")
-def export(tmp_path_factory):
-    out = tmp_path_factory.mktemp("harbor")
-    done = subprocess.run(
+def run_export(out: Path, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [sys.executable, "-I", str(BENCHMARK / "export.py"), "--out", str(out)],
         capture_output=True,
         text=True,
-        check=True,
+        check=check,
     )
-    return out, done.stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def export(tmp_path_factory):
+    out = tmp_path_factory.mktemp("harbor")
+    return out, run_export(out).stdout.strip()
 
 
 def test_export_writes_the_recorded_bytes(export):
@@ -70,3 +73,20 @@ def test_the_served_grade_file_equals_the_verifiers(export):
         if (out / task / "environment/world/grade.json").read_bytes() != (out / task / "tests/grade.json").read_bytes()
     ]
     assert differ == []
+
+
+def test_exporting_over_an_earlier_export_removes_files_it_no_longer_writes(export, tmp_path):
+    _, fresh = export
+    out = tmp_path / "harbor"
+    run_export(out)
+    (out / "RESULTS.md").write_text("stale\n", encoding="utf-8")
+    again = run_export(out).stdout.strip()
+    assert not (out / "RESULTS.md").exists()
+    assert again == fresh
+
+
+def test_export_refuses_to_clear_a_folder_that_holds_no_earlier_export(tmp_path):
+    (tmp_path / "keep.txt").write_text("mine\n", encoding="utf-8")
+    done = run_export(tmp_path, check=False)
+    assert done.returncode != 0
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "mine\n"
