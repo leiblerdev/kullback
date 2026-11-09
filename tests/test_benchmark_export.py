@@ -75,18 +75,36 @@ def test_the_served_grade_file_equals_the_verifiers(export):
     assert differ == []
 
 
-def test_exporting_over_an_earlier_export_removes_files_it_no_longer_writes(export, tmp_path):
+def test_exporting_over_an_earlier_export_removes_stale_files_and_keeps_dot_folders(export, tmp_path):
     _, fresh = export
     out = tmp_path / "harbor"
     run_export(out)
     (out / "RESULTS.md").write_text("stale\n", encoding="utf-8")
+    (out / "old-task" / "tests").mkdir(parents=True)
+    (out / "old-task" / "tests" / "grade.json").write_text("{}\n", encoding="utf-8")
+    (out / ".git" / "objects").mkdir(parents=True)
+    (out / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     again = run_export(out).stdout.strip()
     assert not (out / "RESULTS.md").exists()
+    assert not (out / "old-task").exists()
+    assert (out / ".git" / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/main\n"
+    assert (out / ".git" / "objects").is_dir()
     assert again == fresh
 
 
-def test_export_refuses_to_clear_a_folder_that_holds_no_earlier_export(tmp_path):
+def test_exporting_to_a_symlink_of_an_earlier_export_gives_the_same_digest(export, tmp_path):
+    _, fresh = export
+    real = tmp_path / "real"
+    run_export(real)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    again = run_export(link).stdout.strip()
+    assert link.is_symlink()
+    assert again == fresh
+
+
+def test_export_refuses_a_folder_that_holds_files_and_no_earlier_export(tmp_path):
     (tmp_path / "keep.txt").write_text("mine\n", encoding="utf-8")
     done = run_export(tmp_path, check=False)
     assert done.returncode != 0
-    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "mine\n"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["keep.txt"]
